@@ -1,0 +1,33 @@
+[project]
+name = "quicktunetool"
+version = "0.0.0"
+dependencies = [
+  "torch",
+  "torchvision",
+  "ConfigSpace",
+  "gpytorch",
+  "pandas",
+  "pyyaml",
+  "scikit-learn",
+  "timm",
+  "tqdm",
+]
+requires-python = ">=3.9"
+authors = [{ name = "Ivo Rapant", email = "rapanti@cs.uni-freiburg.de" }]
+readme = "README.md"
+description = "Quick-Tune: Quickly Learning Which Pretrained Model to Finetune and How"
+classifiers = [
+  'Intended Audience :: Science/Research',
+  'Intended Audience :: Developers',
+  'License :: OSI Approved :: BSD License',
+  'Programming Language :: Python',
+  'Topic :: Software Development',
+  'Topic :: Scientific/Engineering',
+  'Operating System :: POSIX',
+  'Operating System :: Unix',
+  'Programming Language :: Python :: 3',
+]
+license = { file = "LICENSE" }
+
+[project.urls]
+Homepage = "https://github.com/rapanti/quicktune"
