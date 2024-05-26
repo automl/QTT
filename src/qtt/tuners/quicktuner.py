@@ -52,9 +52,9 @@ class QuickTuner:
     def fit(
         self,
         data_path: str,
-        time_limit: Optional[float] = None,
         train_split: str = "train",
         val_split: str = "val",
+        time_limit: Optional[float] = None,
     ):
         logger.info("Starting QuickTuner fit.")
         logger.info(f"QuickTuneTool will save results to {self.path}")
@@ -64,8 +64,6 @@ class QuickTuner:
 
         # if self.config.include_metafeatures:
         metafeat = get_dataset_metafeatures(data_path)
-        metafeat["n_samples"] = 3200
-        metafeat["n_features"] = 128
         self.optimizer.set_metafeatures(**metafeat)
 
         data_info = {
@@ -99,7 +97,7 @@ class QuickTuner:
             )
 
             logger.info("Evaluation complete.")
-            logger.info(f"Score: {result.perf:.3f}% | Time: {result.time:.1f}s")
+            logger.info(f"Score: {result.score:.3f}% | Time: {result.time:.1f}s")
 
             self.optimizer.observe(config_id, budget, result)
 
@@ -123,7 +121,7 @@ class QuickTuner:
             None
         """
         idx = result.idx
-        score = result.perf
+        score = result.score
         self.history["configs"][idx].append(score)
         self.history["score"].append(score)
         self.history["cost"].append(cost)

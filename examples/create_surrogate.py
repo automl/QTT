@@ -6,5 +6,5 @@ data = MTLBMDataSet(meta_path)
 data.save_data_info()
 
 surrogate, config = get_surrogate(data, "dyhpo")
-surrogate = meta_train_surrogate(surrogate, data, train_iter=11)
+surrogate = meta_train_surrogate(surrogate, data)
 surrogate.save_checkpoint()

@@ -90,7 +90,7 @@ class QuickOptimizer:
         self.eval_count = 0
 
         self.incumbent = -1
-        self.incumbent_perf = float("-inf")
+        self.incumbent_score = float("-inf")
         self.info_dict = dict()
         self.finished_configs = set()
         self.results: dict[int, List[int]] = dict()
@@ -280,28 +280,28 @@ class QuickOptimizer:
         """
         observe_time_start = time.time()
 
-        perf = result.perf
+        score = result.score
         if result.status == QTaskStatus.ERROR:
             self.finished_configs.add(index)
-            perf = 0.0
+            score = 0.0
 
         # if score >= (1 - threshold)
         # maybe accept config as finished before reaching max performance ??? TODO
-        if perf >= 1 or budget >= self.max_budget:
+        if score >= 100 or budget >= self.max_budget:
             self.finished_configs.add(index)
         
         if result.status == QTaskStatus.SUCCESS:
             if index in self.results:
                 self.results[index].append(budget)
-                self.scores[index].append(perf)
+                self.scores[index].append(score)
             else:
                 self.results[index] = [budget]
-                self.scores[index] = [perf]
+                self.scores[index] = [score]
                 self.init_conf_eval_count += 1
 
-        if self.incumbent_perf < perf:
+        if self.incumbent_score < score:
             self.incumbent = index
-            self.incumbent_perf = perf
+            self.incumbent_score = score
             self.no_improvement_patience = 0
         else:
             self.no_improvement_patience += 1
@@ -353,10 +353,8 @@ class QuickOptimizer:
             # pad the curve with zeros if it is not fully evaluated
             curve = curve + [0.0] * (self.max_budget - len(curve))
 
-            # configuration not evaluated fully yet
-            if budget < self.max_budget:
-                budgets.append(budget)
-                curves.append(curve)
+            budgets.append(budget)
+            curves.append(curve)
 
         configs = self.candidate_configs
         budgets = np.array(budgets)
@@ -413,7 +411,7 @@ class QuickOptimizer:
             cost = np.array(1)
 
         ymax = self._get_ymax_per_budget()
-        ymax = ymax[budgets]
+        ymax = ymax[budgets - 1]
 
         acq_values = self.acq(ymax, mean, std, cost)
         return np.argsort(acq_values).tolist()

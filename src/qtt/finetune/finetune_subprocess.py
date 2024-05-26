@@ -126,7 +126,7 @@ def eval_finetune_conf(
     except subprocess.CalledProcessError as e:
         print(f"Command failed with return code {e.returncode}")
         result = QTunerResult(
-            perf=-1,
+            score=-1,
             time=-1,
             status=QTaskStatus.ERROR,
             info=str(e),
@@ -141,7 +141,7 @@ def eval_finetune_conf(
     time = train_time + eval_time
     
     result = QTunerResult(
-        perf=eval_top1,
+        score=eval_top1,
         time=time,
         status=QTaskStatus.SUCCESS,
     )

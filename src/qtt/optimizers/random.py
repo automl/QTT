@@ -33,10 +33,6 @@ class RandomOptimizer:
         self.cm = config_manager
 
         self.sample_configs = self.cm.sample_configuration(num_configs)
-        self.candidate_configs = self.cm.preprocess_configurations(
-            self.sample_configs,
-            standardize=True,
-        ).values
 
         self.num_configs = num_configs
         self.max_budget = max_budget
@@ -106,14 +102,14 @@ class RandomOptimizer:
             The overhead time of the iteration.
         """
         # if y is an undefined value, append 0 as the overhead since we finish here.
-        score = result.perf
+        score = result.score
         if result.status == QTaskStatus.ERROR:
             self.finished_configs.add(index)
-            return
+            return 0
 
-        # if score >= (1 - threshold)
+        # if score >= (100 - threshold)
         # maybe accept config as finished before reaching max performance and do not evaluate further
-        if score >= 1 or budget >= self.max_budget:
+        if score >= 100 or budget >= self.max_budget:
             self.finished_configs.add(index)
 
         if index in self.results:

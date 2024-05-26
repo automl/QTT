@@ -1,6 +1,5 @@
 import logging
 import os
-import sys
 from dataclasses import dataclass
 from enum import Enum
 
@@ -17,13 +16,15 @@ class QTaskStatus(Enum):
 @dataclass
 class QTunerResult:
     idx: int
-    perf: float
+    score: float
     time: float
     status: QTaskStatus
     info: str = ""
 
 
-def get_dataset_metafeatures(path: str):
+def get_dataset_metafeatures(
+    path: str, train_split: str = "train", val_split: str = "val"
+):
     """
     Get metafeatures of the dataset.
 
@@ -35,26 +36,33 @@ def get_dataset_metafeatures(path: str):
     Returns
     -------
     dict
-        Metafeatures of the dataset
+        meta-features of the dataset
     """
     logger.info("metafeatures not given, infer from dataset")
-    if not path.endswith("train"):
-        path = os.path.join(path, "train")
-    assert os.path.exists(path), f"Path {path} does not exist."
-    try:
-        dataset = ImageFolder(path)
-        num_samples = len(dataset)
-        num_channels = 3 if dataset[0][0].mode == "RGB" else 1
-        num_classes = len(dataset.classes)
-        image_size = dataset[0][0].size[1]
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    assert os.path.exists(path), f"dataset-path: {path} does not exist."
+    n_samples = 0
+    n_classes = 0
+    n_features = 128  # fixed for now
+    n_channels = 3
+
+    # trainset
+    train_path = os.path.join(path, train_split)
+    if os.path.exists(train_path):
+        trainset = ImageFolder(train_path)
+        n_samples += len(trainset)
+        n_channels = 3 if trainset[0][0].mode == "RGB" else 1
+        n_classes = len(trainset.classes)
+
+    # valset
+    val_path = os.path.join(path, val_split)
+    if os.path.exists(val_path):
+        valset = ImageFolder(val_path)
+        n_samples += len(valset)
 
     meta_features = {
-        "n_samples": num_samples,
-        "n_classes": num_classes,
-        "n_features": image_size,
-        "n_channels": num_channels,
+        "n_samples": n_samples,
+        "n_classes": n_classes,
+        "n_features": n_features,
+        "n_channels": n_channels,
     }
     return meta_features

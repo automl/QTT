@@ -52,9 +52,9 @@ class MTLBMDataSet:
         df = pd.read_csv(path, index_col=0)
 
         if self.standardize:
-            mean = df.mean()
-            std = df.std()
-            df[NUM_HP] = df[NUM_HP] - mean[NUM_HP] / std[NUM_HP]
+            self.cfg_mean = df.mean()
+            self.cfg_std = df.std()
+            df[NUM_HP] = df[NUM_HP] - self.cfg_mean[NUM_HP] / self.cfg_std[NUM_HP]
 
         if self.sort_hp:
             cols = list(df.columns)
@@ -158,18 +158,19 @@ class MTLBMDataSet:
         return self.configs.values
     
     def get_meta_data(self):
-        mean = self.configs.mean()
-        std = self.configs.std()
+        mean = self.cfg_mean
+        std = self.cfg_std
 
         # Set mean and std of categorical and non-numerical hyperparameters to 0
         NON_NUM_HP = [col for col in self.configs.columns if col not in NUM_HP]
         mean[NON_NUM_HP] = 0
         std[NON_NUM_HP] = 0
 
+        mean = mean[self.configs.columns]
+        std = std[self.configs.columns]
         return pd.DataFrame([mean, std], index=["mean", "std"])
 
     def save_data_info(self, path: str = "."):
         df = self.get_meta_data()
-
         save_path = os.path.join(path, "meta_info.csv")
         df.to_csv(save_path)

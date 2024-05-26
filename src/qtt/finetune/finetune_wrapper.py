@@ -129,7 +129,7 @@ def eval_finetune_conf(
         print("Error:", e)
         result = QTunerResult(
             idx=config_id,
-            perf=-1,
+            score=-1,
             time=-1,
             status=QTaskStatus.ERROR,
             info=str(e),
@@ -145,7 +145,7 @@ def eval_finetune_conf(
     
     result = QTunerResult(
         idx=config_id,
-        perf=eval_top1,
+        score=eval_top1,
         time=time,
         status=QTaskStatus.SUCCESS,
     )
