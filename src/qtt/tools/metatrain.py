@@ -17,9 +17,9 @@ def meta_train_surrogate(
     surrogate: Surrogate,
     metaset: MTLBMDataSet,
     batch_size: int = 32,
-    lr: float = 1e-4,
+    lr: float = 1e-3,
     train_iter: int = 10000,
-    val_iter: int = 50,
+    val_iter: int = 100,
     val_freq: int = 20,
     use_scheduler: bool = True,
     device="auto",
@@ -39,7 +39,7 @@ def meta_train_surrogate(
     surrogate.train()
 
     loader = MetaDataLoader(metaset, batch_size, seed)
-    for metric in ("perf", "cost"):
+    for metric in "perf", "cost":
         optimizer = torch.optim.Adam(surrogate.parameters(), lr)
         scheduler = None
         if use_scheduler:
@@ -58,6 +58,8 @@ def meta_train_surrogate(
                 optimizer.step()
             else:
                 target = batch.pop("target")
+                batch.pop("curve")
+                batch.pop("budget")
                 logits = surrogate.cost_predictor(**batch)
                 loss = torch.nn.functional.mse_loss(logits.reshape(target.shape), target)
                 loss.backward()
@@ -98,16 +100,19 @@ def validate(surrogate, metric, val_iter, device, loader):
             target = batch_test.pop("target")
 
             mean, _, _ = surrogate.predict_pipeline(batch_train, batch_test)
-            loss = torch.nn.functional.mse_loss(mean, target)
+            loss = torch.nn.functional.l1_loss(mean, target)
+
         else:
             batch = loader.get_batch(mode="val", metric=metric)
+            batch.pop("curve")
+            batch.pop("budget")
             for key, item in batch.items():
                 batch[key] = item.to(device)
             target = batch.pop("target")
 
             logits = surrogate.cost_predictor(**batch)
             logits = logits.reshape(target.shape)
-            loss = torch.nn.functional.mse_loss(logits, target)
+            loss = torch.nn.functional.l1_loss(logits, target)
 
         val_loss += loss.item()
     val_loss /= val_iter

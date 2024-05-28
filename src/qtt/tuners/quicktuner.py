@@ -77,8 +77,6 @@ class QuickTuner:
         with open(os.path.join(self.path, "configs.json"), "w") as f:
             json.dump(configs, f, indent=2, sort_keys=True)
 
-        # history: dict = {"score": [], "cost": [], "configs": dict()}
-
         start_time = time.time()
         while True:
             config_id, budget = self.optimizer.suggest()

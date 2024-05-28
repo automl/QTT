@@ -1,3 +1,4 @@
+from collections import defaultdict
 import logging
 import random
 import time
@@ -49,6 +50,9 @@ class QuickOptimizer:
         The path to save the output files.
     """
 
+    n_iter_no_change = 3
+    tol = 0.0
+
     def __init__(
         self,
         surrogate: Surrogate,
@@ -84,8 +88,9 @@ class QuickOptimizer:
         self.max_budget = max_budget
         self.fantasize_stepsize = fantasize_steps
 
+        self.init_choice_method = "optimizer"
         self.init_conf_idx = 0
-        self.init_conf_nr = 1
+        self.init_conf_nr = 10
         self.init_conf_eval_count = 0
         self.eval_count = 0
 
@@ -93,9 +98,11 @@ class QuickOptimizer:
         self.incumbent_score = float("-inf")
         self.info_dict = dict()
         self.finished_configs = set()
-        self.results: dict[int, List[int]] = dict()
-        self.scores: dict[int, List[float]] = dict()
-        self.costs: dict[int, List[float]] = dict()
+        self.evaluated_configs = set()
+        self.budgets: dict[int, List[int]] = defaultdict(list)
+        self.scores: dict[int, List[float]] = defaultdict(list)
+        self.costs: dict[int, List[float]] = defaultdict(list)
+        self.score_history = {i: np.full(3, 0.0) for i in range(num_configs)}
 
         self.suggest_time_duration = 0
         self.output_path = output_path
@@ -223,30 +230,28 @@ class QuickOptimizer:
         """
         # check if we still have random configurations to evaluate
         if self.init_conf_eval_count < self.init_conf_nr:
-            logger.info(
-                "Initialization phase not over yet. "
-                "Returning randomly sampled configuration"
-            )
+            if self.init_choice_method == "random":
+                index = index = self.init_conf_idx
 
-            index = self.init_conf_idx
+            elif self.init_choice_method == "optimizer":
+                mean, std, budgets, costs = self._predict()
+                ranks = self.find_suggested_config(mean, std, budgets, costs)
+                ranks = [idx for idx in ranks if idx not in self.evaluated_configs]
+                index = ranks[-1]
+
             budget = self.fantasize_stepsize
             self.init_conf_idx += 1
-
             return index, budget
 
         else:
             mean, std, budgets, costs = self._predict()
-
-            best_indices = self.find_suggested_config(mean, std, budgets, costs)
-
-            best_indices = [
-                idx for idx in best_indices if idx not in self.finished_configs
-            ]
-            index = best_indices[-1]
+            ranks = self.find_suggested_config(mean, std, budgets, costs)
+            ranks = [idx for idx in ranks if idx not in self.finished_configs]
+            index = ranks[-1]
 
             # decide for what budget we will evaluate the most promising hyperparameter configuration next.
-            if index in self.results:
-                budget = self.results[index][-1]
+            if index in self.budgets:
+                budget = self.budgets[index][-1]
                 budget += self.fantasize_stepsize
                 # if fantasize_stepsize is bigger than 1
                 budget = min(budget, self.max_budget)
@@ -287,17 +292,23 @@ class QuickOptimizer:
 
         # if score >= (1 - threshold)
         # maybe accept config as finished before reaching max performance ??? TODO
-        if score >= 100 or budget >= self.max_budget:
+        if score >= 90 or budget >= self.max_budget:
             self.finished_configs.add(index)
-        
+
         if result.status == QTaskStatus.SUCCESS:
-            if index in self.results:
-                self.results[index].append(budget)
-                self.scores[index].append(score)
-            else:
-                self.results[index] = [budget]
-                self.scores[index] = [score]
-                self.init_conf_eval_count += 1
+            self.budgets[index].append(budget)
+            self.scores[index].append(score)
+            self.costs[index].append(result.time)
+            self.evaluated_configs.add(index)
+            self.eval_count += 1
+            self.init_conf_eval_count = len(self.evaluated_configs)
+
+        if self.n_iter_no_change is not None:
+            n_last_iter = self.score_history[index]
+            if not np.any(score + self.tol > n_last_iter):
+                self.finished_configs.add(index)
+            self.score_history[index] = np.roll(self.score_history[index], 1)
+            self.score_history[index][0] = score
 
         if self.incumbent_score < score:
             self.incumbent = index
@@ -307,10 +318,10 @@ class QuickOptimizer:
             self.no_improvement_patience += 1
 
         # initialization phase over. Now we can sample from the model.
-        if self.init_conf_eval_count >= self.init_conf_nr:
+        if self.init_conf_eval_count >= 10:
             restart = True
             # restart the model if we have not seen enough evaluations
-            if self.eval_count > 10:  # TODO: make this a parameter
+            if self.eval_count > 32:  # TODO: make this a parameter
                 restart = False
             # restart the model if we have not seen any improvement for a while
             if self.no_improvement_patience > self.no_improvement_threshold:
@@ -343,10 +354,10 @@ class QuickOptimizer:
         curves = []
 
         for index in range(len(self.candidate_configs)):
-            if index in self.results:
-                budget = max(self.results[index])
+            if index in self.budgets:
+                budget = max(self.budgets[index])
                 curve = self.scores[index]
-            else:  # config was not evaluated before fantasize
+            else:  # config was not evaluated before, fantasize
                 budget = 0
                 curve = [0.0]
 
@@ -385,8 +396,8 @@ class QuickOptimizer:
         budgets = []
         curves = []
 
-        for hp_index in self.results:
-            budget = self.results[hp_index]
+        for hp_index in self.evaluated_configs:
+            budget = self.budgets[hp_index]
             scores = self.scores[hp_index]
             config = self.candidate_configs[hp_index]
 

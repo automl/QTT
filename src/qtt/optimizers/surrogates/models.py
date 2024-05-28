@@ -92,26 +92,68 @@ class FeatureExtractor(nn.Module):
             param.requires_grad = False
 
 
-class CostPredictor(FeatureExtractor):
+class CostPredictor(nn.Module):
     def __init__(
         self,
-        *args,
-        **kwargs,
+        in_features: int,
+        hidden_features: int = 32,
+        out_features: int = 32,
+        in_meta_features: int = 4,
+        out_meta_features: int = 16,
+        enc_num_layers: int = 2,
+        enc_slice_ranges: Optional[List[int,]] = None,
     ):
-        super().__init__(*args, **kwargs)
-        out_features = kwargs.get("out_features", 32)
-        self.act = nn.ReLU(inplace=True)
+        super().__init__()
+        if enc_slice_ranges is not None:
+            assert enc_slice_ranges[-1] < in_features
+            _slices = [0] + enc_slice_ranges + [in_features]
+            _ranges = [(_slices[i], _slices[i + 1]) for i in range(len(_slices) - 1)]
+            self.enc_slice_ranges = _ranges
+            self.encoder = self._build_encoder(hidden_features, enc_num_layers, _ranges)
+            out_enc_features = len(self.encoder) * hidden_features
+        else:
+            out_enc_features = in_features
+            self.encoder = None
+        
+        self.fc_meta = nn.Linear(in_meta_features, out_meta_features)
+        out_enc_features += out_meta_features
+        
+        self.fc1 = nn.Linear(out_enc_features, hidden_features)
+        self.fc2 = nn.Linear(hidden_features, out_features)
         self.fc3 = nn.Linear(out_features, 1)
+
+        self.act = nn.LeakyReLU()
+        self.relu = nn.ReLU()
+
+    def _build_encoder(self, hidden_feat, num_layers, ranges):
+        encoder = nn.ModuleList()
+        for a, b in ranges:
+            encoder.append(MLP(b - a, [hidden_feat] * num_layers, hidden_feat))
+        return encoder
 
     @classmethod
     def init_from_config(cls, config: dict) -> "CostPredictor":
         return cls(**config)
 
-    def forward(self, config, budget, curve, metafeat=None):
-        x = super().forward(config, budget, curve, metafeat)
+    def forward(self, config, metafeat=None):
+        if self.encoder is not None:
+            x = []
+            for (a, b), encoder in zip(self.enc_slice_ranges, self.encoder):
+                x.append(encoder(config[:, a:b]))
+            x = torch.cat(x, dim=1)
+        else:
+            x = config
+
+        if metafeat is not None:
+            out = self.fc_meta(metafeat)
+            x = torch.cat([x, out], dim=1)
+
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.fc2(x)
         x = self.act(x)
         x = self.fc3(x)
-        x = self.act(x)
+        x = self.relu(x)
         return x
 
 

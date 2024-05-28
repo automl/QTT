@@ -154,16 +154,15 @@ class DyHPO(Surrogate):
                 - target: The target values.
                 - metafeat: The metafeatures.
         """
-        self.train()
-
         config = data["config"]
         if config.size(0) == 1:  # skip training if only one point is provided
+            self.eval()
             return
 
-        optimizer = torch.optim.Adam(self.parameters(), self.lr)
-
         initial_state = self._get_state()
+        optimizer = torch.optim.Adam(self.parameters(), self.lr)
         training_errored = False
+        self.train()
 
         for key, item in data.items():
             data[key] = item.to(self.device)
@@ -171,12 +170,22 @@ class DyHPO(Surrogate):
         if restart:
             self._reinit_()
 
-        for _ in range(self.refine_steps):
+        for i in range(self.refine_steps):
             try:
                 loss = self.forward(**data)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+                print(
+                    "Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f"
+                    % (
+                        i + 1,
+                        self.refine_steps,
+                        loss.item(),
+                        self.gp.covar_module.base_kernel.lengthscale.item(),
+                        self.gp.likelihood.noise.item(),
+                    )
+                )
             except Exception as e:
                 logger.warn(f"The following error happened while training: {e}")
                 self.restart = True
@@ -185,6 +194,7 @@ class DyHPO(Surrogate):
 
         if training_errored:
             self.load_state_dict(initial_state)
+        self.eval()
 
     def predict_pipeline(
         self,
@@ -238,6 +248,8 @@ class DyHPO(Surrogate):
             test_feat = self.feature_extractor(**test_data)
             pred = self.gll(self.gp(test_feat))
 
+            test_data.pop("curve", None)
+            test_data.pop("budget", None)
             cost = self.cost_predictor(**test_data)
 
         mean = pred.mean.reshape(-1)
