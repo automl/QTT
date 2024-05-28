@@ -14,6 +14,10 @@ Find more information in the paper `Quick-Tune: Quickly Learning Which Pre Train
 ## Getting Started
 
 ### Installation
+Create environment:
+```bash
+conda create -n qtt python=3.10
+```
 
 To install the QuickTuneTool, you can simply use `pip`:
 ```bash
@@ -56,3 +60,17 @@ unzip mtlbm.zip
 ```
 
 ### License
+
+### Cite us
+
+If you use this repository, please cite us as:
+```
+@inproceedings{
+arango2024quicktune,
+title={Quick-Tune: Quickly Learning Which Pretrained Model to Finetune and How},
+author={Sebastian Pineda Arango and Fabio Ferreira and Arlind Kadra and Frank Hutter and Josif Grabocka},
+booktitle={The Twelfth International Conference on Learning Representations},
+year={2024},
+url={https://openreview.net/forum?id=tqh1zdXIra}
+}
+```
