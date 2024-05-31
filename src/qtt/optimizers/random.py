@@ -7,7 +7,6 @@ import torch
 
 from qtt.configuration.manager import ConfigManager
 from qtt.utils.log_utils import set_logger_verbosity
-from qtt.utils.qt_utils import QTaskStatus, QTunerResult
 
 logger = logging.getLogger("QuickOptimizer")
 
@@ -82,7 +81,7 @@ class RandomOptimizer:
         self,
         index: int,
         budget: int,
-        result: QTunerResult,
+        results: dict | list[dict],
     ):
         """
         Observe the learning curve of a hyperparameter configuration.

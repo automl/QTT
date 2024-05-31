@@ -9,7 +9,6 @@ from scipy.stats import norm
 
 from qtt.configuration.manager import ConfigManager
 from qtt.utils.log_utils import set_logger_verbosity
-from qtt.utils.qt_utils import QTaskStatus, QTunerResult
 
 from qtt.optimizers.surrogates.surrogate import Surrogate
 
@@ -257,9 +256,7 @@ class QuickOptimizer:
 
     def observe(
         self,
-        index: int,
-        budget: int,
-        result: QTunerResult,
+        results: dict | list[dict],
     ):
         """
         Observe the learning curve of a hyperparameter configuration.
@@ -279,32 +276,40 @@ class QuickOptimizer:
             The overhead time of the iteration.
         """
         observe_time_start = time.time()
-
-        score = result.score
-        if result.status == QTaskStatus.ERROR:
-            self.finished_configs.add(index)
-            score = 0.0
-
-        # if score >= (1 - threshold)
-        # maybe accept config as finished before reaching max performance ??? TODO
-        if score >= 100 or budget >= self.max_budget:
-            self.finished_configs.add(index)
         
-        if result.status == QTaskStatus.SUCCESS:
-            if index in self.results:
-                self.results[index].append(budget)
-                self.scores[index].append(score)
-            else:
-                self.results[index] = [budget]
-                self.scores[index] = [score]
-                self.init_conf_eval_count += 1
+        if isinstance(results, dict):
+            results = [results]
+        
+        for result in results:
+            score = result["score"]
+            budget = result["budget"]
+            config_id = result["config_id"]
+            status = result["status"]
+            cost = result["cost"]
 
-        if self.incumbent_score < score:
-            self.incumbent = index
-            self.incumbent_score = score
-            self.no_improvement_patience = 0
-        else:
-            self.no_improvement_patience += 1
+            if not status:
+                self.finished_configs.add(config_id)
+
+            if score >= 100 or budget >= self.max_budget:
+                self.finished_configs.add(config_id)
+            
+            if status:
+                if config_id in self.results:
+                    self.results[config_id].append(budget)
+                    self.scores[config_id].append(score)
+                    self.costs[config_id].append(cost)
+                else:
+                    self.results[config_id] = [budget]
+                    self.scores[config_id] = [score]
+                    self.costs[config_id] = [cost]
+                    self.init_conf_eval_count += 1
+
+            if self.incumbent_score < score:
+                self.incumbent = config_id
+                self.incumbent_score = score
+                self.no_improvement_patience = 0
+            else:
+                self.no_improvement_patience += 1
 
         # initialization phase over. Now we can sample from the model.
         if self.init_conf_eval_count >= self.init_conf_nr:

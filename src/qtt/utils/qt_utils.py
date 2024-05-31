@@ -1,25 +1,9 @@
 import logging
 import os
-from dataclasses import dataclass
-from enum import Enum
 
 from torchvision.datasets import ImageFolder
 
 logger = logging.getLogger(__name__)
-
-
-class QTaskStatus(Enum):
-    SUCCESS = 1
-    ERROR = 2
-
-
-@dataclass
-class QTunerResult:
-    idx: int
-    score: float
-    time: float
-    status: QTaskStatus
-    info: str = ""
 
 
 def get_dataset_metafeatures(
