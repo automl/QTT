@@ -88,7 +88,6 @@ class QuickOptimizer:
         self.max_budget = max_budget
         self.fantasize_stepsize = fantasize_steps
 
-        self.init_choice_method = "optimizer"
         self.init_conf_idx = 0
         self.init_conf_nr = 10
         self.init_conf_eval_count = 0
@@ -230,15 +229,7 @@ class QuickOptimizer:
         """
         # check if we still have random configurations to evaluate
         if self.init_conf_eval_count < self.init_conf_nr:
-            if self.init_choice_method == "random":
-                index = index = self.init_conf_idx
-
-            elif self.init_choice_method == "optimizer":
-                mean, std, budgets, costs = self._predict()
-                ranks = self.find_suggested_config(mean, std, budgets, costs)
-                ranks = [idx for idx in ranks if idx not in self.evaluated_configs]
-                index = ranks[-1]
-
+            index = self.init_conf_idx
             budget = self.fantasize_stepsize
             self.init_conf_idx += 1
             return index, budget

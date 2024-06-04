@@ -176,16 +176,16 @@ class DyHPO(Surrogate):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                print(
-                    "Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f"
-                    % (
-                        i + 1,
-                        self.refine_steps,
-                        loss.item(),
-                        self.gp.covar_module.base_kernel.lengthscale.item(),
-                        self.gp.likelihood.noise.item(),
-                    )
-                )
+                # print(
+                #     "Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f"
+                #     % (
+                #         i + 1,
+                #         self.refine_steps,
+                #         loss.item(),
+                #         self.gp.covar_module.base_kernel.lengthscale.item(),
+                #         self.gp.likelihood.noise.item(),
+                #     )
+                # )
             except Exception as e:
                 logger.warn(f"The following error happened while training: {e}")
                 self.restart = True
