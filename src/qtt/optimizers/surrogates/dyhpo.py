@@ -241,7 +241,7 @@ class DyHPO(Surrogate):
         target = train_data.pop("target")
         test_data.pop("target", None)
 
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+        with torch.no_grad():  #, gpytorch.settings.fast_pred_var():
             train_feat = self.feature_extractor(**train_data)
             self.gp.set_train_data(train_feat, target, False)
 
