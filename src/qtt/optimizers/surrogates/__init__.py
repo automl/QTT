@@ -1,2 +1,4 @@
 from .dyhpo import DyHPO
-from .surrogate import Surrogate
+from .estimator import CostEstimator
+
+__all__ = ["CostEstimator", "DyHPO"]

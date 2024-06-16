@@ -49,7 +49,7 @@ class ConfigManager:
         self,
         configurations: List[Configuration],
         standardize: bool = True,
-    ) -> pd.DataFrame:
+    ):
         """
         Preprocesses a list of configurations by encoding categorical and numerical hyperparameters,
         and optionally standardizing numerical hyperparameters.

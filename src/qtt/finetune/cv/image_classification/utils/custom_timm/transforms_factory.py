@@ -1,29 +1,46 @@
-""" Transforms Factory
+"""Transforms Factory
 Factory methods for building image transforms for use with TIMM (PyTorch Image Models)
 
 Hacked together by / Copyright 2019, Ross Wightman
 """
+
 import math
 from typing import Optional, Tuple, Union
 
 import torch
 from torchvision import transforms
 
-from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, DEFAULT_CROP_PCT
-from timm.data.auto_augment import rand_augment_transform, augment_and_mix_transform, auto_augment_transform
-from timm.data.transforms import str_to_interp_mode, str_to_pil_interp, RandomResizedCropAndInterpolation,\
-    ResizeKeepRatio, CenterCropOrPad, RandomCropOrPad, TrimBorder, ToNumpy
+from timm.data.constants import (
+    IMAGENET_DEFAULT_MEAN,
+    IMAGENET_DEFAULT_STD,
+    DEFAULT_CROP_PCT,
+)
+from timm.data.auto_augment import (
+    rand_augment_transform,
+    augment_and_mix_transform,
+    auto_augment_transform,
+)
+from timm.data.transforms import (
+    str_to_interp_mode,
+    str_to_pil_interp,
+    RandomResizedCropAndInterpolation,
+    ResizeKeepRatio,
+    CenterCropOrPad,
+    RandomCropOrPad,
+    TrimBorder,
+    ToNumpy,
+)
 from timm.data.random_erasing import RandomErasing
 
 
 def transforms_noaug_train(
-        img_size: Union[int, Tuple[int, int]] = 224,
-        interpolation: str = 'bilinear',
-        use_prefetcher: bool = False,
-        mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
-        std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
+    img_size: Union[int, Tuple[int, int]] = 224,
+    interpolation: str = "bilinear",
+    use_prefetcher: bool = False,
+    mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
+    std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
 ):
-    """ No-augmentation image transforms for training.
+    """No-augmentation image transforms for training.
 
     Args:
         img_size: Target image size.
@@ -35,12 +52,12 @@ def transforms_noaug_train(
     Returns:
 
     """
-    if interpolation == 'random':
+    if interpolation == "random":
         # random interpolation not supported with no-aug
-        interpolation = 'bilinear'
+        interpolation = "bilinear"
     tfl = [
         transforms.Resize(img_size, interpolation=str_to_interp_mode(interpolation)),
-        transforms.CenterCrop(img_size)
+        transforms.CenterCrop(img_size),
     ]
     if use_prefetcher:
         # prefetcher and collate will handle tensor conversion and norm
@@ -48,42 +65,39 @@ def transforms_noaug_train(
     else:
         tfl += [
             transforms.ToTensor(),
-            transforms.Normalize(
-                mean=torch.tensor(mean),
-                std=torch.tensor(std)
-            )
+            transforms.Normalize(mean=torch.tensor(mean), std=torch.tensor(std)),
         ]
     return transforms.Compose(tfl)
 
 
 def transforms_imagenet_train(
-        img_size: Union[int, Tuple[int, int]] = 224,
-        scale: Optional[Tuple[float, float]] = None,
-        ratio: Optional[Tuple[float, float]] = None,
-        train_crop_mode: Optional[str] = None,
-        hflip: float = 0.5,
-        vflip: float = 0.,
-        color_jitter: Union[float, Tuple[float, ...]] = 0.4,
-        color_jitter_prob: Optional[float] = None,
-        force_color_jitter: bool = False,
-        grayscale_prob: float = 0.,
-        gaussian_blur_prob: float = 0.,
-        auto_augment: Optional[str] = None,
-        interpolation: str = 'random',
-        mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
-        std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
-        re_prob: float = 0.,
-        re_mode: str = 'const',
-        re_count: int = 1,
-        re_num_splits: int = 0,
-        use_prefetcher: bool = False,
-        separate: bool = False,
-        trivial_augment: bool = False,
-        rand_augment: bool = False,
-        ra_num_ops: int = 2,
-        ra_magnitude: int = 8,
+    img_size: Union[int, Tuple[int, int]] = 224,
+    scale: Optional[Tuple[float, float]] = None,
+    ratio: Optional[Tuple[float, float]] = None,
+    train_crop_mode: Optional[str] = None,
+    hflip: float = 0.5,
+    vflip: float = 0.0,
+    color_jitter: Union[float, Tuple[float, ...]] = 0.4,
+    color_jitter_prob: Optional[float] = None,
+    force_color_jitter: bool = False,
+    grayscale_prob: float = 0.0,
+    gaussian_blur_prob: float = 0.0,
+    auto_augment: Optional[str] = None,
+    interpolation: str = "random",
+    mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
+    std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
+    re_prob: float = 0.0,
+    re_mode: str = "const",
+    re_count: int = 1,
+    re_num_splits: int = 0,
+    use_prefetcher: bool = False,
+    separate: bool = False,
+    trivial_augment: bool = False,
+    rand_augment: bool = False,
+    ra_num_ops: int = 2,
+    ra_magnitude: int = 8,
 ):
-    """ ImageNet-oriented image transforms for training.
+    """ImageNet-oriented image transforms for training.
 
     Args:
         img_size: Target image size.
@@ -116,12 +130,12 @@ def transforms_imagenet_train(
          * a portion of the data through the secondary transform
          * normalizes and converts the branches above with the third, final transform
     """
-    train_crop_mode = train_crop_mode or 'rrc'
-    assert train_crop_mode in {'rrc', 'rkrc', 'rkrr'}
-    if train_crop_mode in ('rkrc', 'rkrr'):
+    train_crop_mode = train_crop_mode or "rrc"
+    assert train_crop_mode in {"rrc", "rkrc", "rkrr"}
+    if train_crop_mode in ("rkrc", "rkrr"):
         # FIXME integration of RKR is a WIP
         scale = tuple(scale or (0.8, 1.00))
-        ratio = tuple(ratio or (0.9, 1/.9))
+        ratio = tuple(ratio or (0.9, 1 / 0.9))
         primary_tfl = [
             ResizeKeepRatio(
                 img_size,
@@ -132,13 +146,13 @@ def transforms_imagenet_train(
                 random_aspect_prob=0.5,
                 random_aspect_range=ratio,
             ),
-            CenterCropOrPad(img_size, padding_mode='reflect')
-            if train_crop_mode == 'rkrc' else
-            RandomCropOrPad(img_size, padding_mode='reflect')
+            CenterCropOrPad(img_size, padding_mode="reflect")
+            if train_crop_mode == "rkrc"
+            else RandomCropOrPad(img_size, padding_mode="reflect"),
         ]
     else:
         scale = tuple(scale or (0.08, 1.0))  # default imagenet scale range
-        ratio = tuple(ratio or (3. / 4., 4. / 3.))  # default imagenet ratio range
+        ratio = tuple(ratio or (3.0 / 4.0, 4.0 / 3.0))  # default imagenet ratio range
         primary_tfl = [
             RandomResizedCropAndInterpolation(
                 img_size,
@@ -147,9 +161,9 @@ def transforms_imagenet_train(
                 interpolation=interpolation,
             )
         ]
-    if hflip > 0.:
+    if hflip > 0.0:
         primary_tfl += [transforms.RandomHorizontalFlip(p=hflip)]
-    if vflip > 0.:
+    if vflip > 0.0:
         primary_tfl += [transforms.RandomVerticalFlip(p=vflip)]
 
     secondary_tfl = []
@@ -158,7 +172,7 @@ def transforms_imagenet_train(
         assert isinstance(auto_augment, str)
         # color jitter is typically disabled if AA/RA on,
         # this allows override without breaking old hparm cfgs
-        disable_color_jitter = not (force_color_jitter or '3a' in auto_augment)
+        disable_color_jitter = not (force_color_jitter or "3a" in auto_augment)
         if isinstance(img_size, (tuple, list)):
             img_size_min = min(img_size)
         else:
@@ -167,12 +181,12 @@ def transforms_imagenet_train(
             translate_const=int(img_size_min * 0.45),
             img_mean=tuple([min(255, round(255 * x)) for x in mean]),
         )
-        if interpolation and interpolation != 'random':
-            aa_params['interpolation'] = str_to_pil_interp(interpolation)
-        if auto_augment.startswith('rand'):
+        if interpolation and interpolation != "random":
+            aa_params["interpolation"] = str_to_pil_interp(interpolation)
+        if auto_augment.startswith("rand"):
             secondary_tfl += [rand_augment_transform(auto_augment, aa_params)]
-        elif auto_augment.startswith('augmix'):
-            aa_params['translate_pct'] = 0.3
+        elif auto_augment.startswith("augmix"):
+            aa_params["translate_pct"] = 0.3
             secondary_tfl += [augment_and_mix_transform(auto_augment, aa_params)]
         else:
             secondary_tfl += [auto_augment_transform(auto_augment, aa_params)]
@@ -188,10 +202,11 @@ def transforms_imagenet_train(
             color_jitter = (float(color_jitter),) * 3
         if color_jitter_prob is not None:
             secondary_tfl += [
-                transforms.RandomApply([
+                transforms.RandomApply(
+                    [
                         transforms.ColorJitter(*color_jitter),
                     ],
-                    p=color_jitter_prob
+                    p=color_jitter_prob,
                 )
             ]
         else:
@@ -202,16 +217,17 @@ def transforms_imagenet_train(
 
     if gaussian_blur_prob:
         secondary_tfl += [
-            transforms.RandomApply([
+            transforms.RandomApply(
+                [
                     transforms.GaussianBlur(kernel_size=23),  # hardcoded for now
                 ],
                 p=gaussian_blur_prob,
             )
         ]
-    
+
     if trivial_augment:
         secondary_tfl += [transforms.TrivialAugmentWide()]
-    
+
     if rand_augment:
         secondary_tfl += [transforms.RandAugment(ra_num_ops, ra_magnitude)]
 
@@ -222,39 +238,40 @@ def transforms_imagenet_train(
     else:
         final_tfl += [
             transforms.ToTensor(),
-            transforms.Normalize(
-                mean=torch.tensor(mean),
-                std=torch.tensor(std)
-            ),
+            transforms.Normalize(mean=torch.tensor(mean), std=torch.tensor(std)),
         ]
-        if re_prob > 0.:
+        if re_prob > 0.0:
             final_tfl += [
                 RandomErasing(
                     re_prob,
                     mode=re_mode,
                     max_count=re_count,
                     num_splits=re_num_splits,
-                    device='cpu',
+                    device="cpu",
                 )
             ]
-    
+
     if separate:
-        return transforms.Compose(primary_tfl), transforms.Compose(secondary_tfl), transforms.Compose(final_tfl)
+        return (
+            transforms.Compose(primary_tfl),
+            transforms.Compose(secondary_tfl),
+            transforms.Compose(final_tfl),
+        )
     else:
         return transforms.Compose(primary_tfl + secondary_tfl + final_tfl)
 
 
 def transforms_imagenet_eval(
-        img_size: Union[int, Tuple[int, int]] = 224,
-        crop_pct: Optional[float] = None,
-        crop_mode: Optional[str] = None,
-        crop_border_pixels: Optional[int] = None,
-        interpolation: str = 'bilinear',
-        mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
-        std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
-        use_prefetcher: bool = False,
+    img_size: Union[int, Tuple[int, int]] = 224,
+    crop_pct: Optional[float] = None,
+    crop_mode: Optional[str] = None,
+    crop_border_pixels: Optional[int] = None,
+    interpolation: str = "bilinear",
+    mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
+    std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
+    use_prefetcher: bool = False,
 ):
-    """ ImageNet-oriented image transform for evaluation and inference.
+    """ImageNet-oriented image transform for evaluation and inference.
 
     Args:
         img_size: Target image size.
@@ -283,14 +300,16 @@ def transforms_imagenet_eval(
     if crop_border_pixels:
         tfl += [TrimBorder(crop_border_pixels)]
 
-    if crop_mode == 'squash':
+    if crop_mode == "squash":
         # squash mode scales each edge to 1/pct of target, then crops
         # aspect ratio is not preserved, no img lost if crop_pct == 1.0
         tfl += [
-            transforms.Resize(scale_size, interpolation=str_to_interp_mode(interpolation)),
+            transforms.Resize(
+                scale_size, interpolation=str_to_interp_mode(interpolation)
+            ),
             transforms.CenterCrop(img_size),
         ]
-    elif crop_mode == 'border':
+    elif crop_mode == "border":
         # scale the longest edge of image to 1/pct of target edge, add borders to pad, then crop
         # no image lost if crop_pct == 1.0
         fill = [round(255 * v) for v in mean]
@@ -304,7 +323,9 @@ def transforms_imagenet_eval(
         if scale_size[0] == scale_size[1]:
             # simple case, use torchvision built-in Resize w/ shortest edge mode (scalar size arg)
             tfl += [
-                transforms.Resize(scale_size[0], interpolation=str_to_interp_mode(interpolation))
+                transforms.Resize(
+                    scale_size[0], interpolation=str_to_interp_mode(interpolation)
+                )
             ]
         else:
             # resize the shortest edge to matching target dim for non-square target
@@ -320,43 +341,43 @@ def transforms_imagenet_eval(
             transforms.Normalize(
                 mean=torch.tensor(mean),
                 std=torch.tensor(std),
-            )
+            ),
         ]
 
     return transforms.Compose(tfl)
 
 
 def create_transform(
-        input_size: Union[int, Tuple[int, int], Tuple[int, int, int]] = 224,
-        is_training: bool = False,
-        no_aug: bool = False,
-        train_crop_mode: Optional[str] = None,
-        scale: Optional[Tuple[float, float]] = None,
-        ratio: Optional[Tuple[float, float]] = None,
-        hflip: float = 0.5,
-        vflip: float = 0.,
-        color_jitter: Union[float, Tuple[float, ...]] = 0.4,
-        color_jitter_prob: Optional[float] = None,
-        grayscale_prob: float = 0.,
-        gaussian_blur_prob: float = 0.,
-        auto_augment: Optional[str] = None,
-        interpolation: str = 'bilinear',
-        mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
-        std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
-        re_prob: float = 0.,
-        re_mode: str = 'const',
-        re_count: int = 1,
-        re_num_splits: int = 0,
-        crop_pct: Optional[float] = None,
-        crop_mode: Optional[str] = None,
-        crop_border_pixels: Optional[int] = None,
-        tf_preprocessing: bool = False,
-        use_prefetcher: bool = False,
-        separate: bool = False,
-        trivial_augment: bool = False,
-        rand_augment: bool = False,
-        ra_num_ops: int = 2,
-        ra_magnitude: int = 8,
+    input_size: Union[int, Tuple[int, int], Tuple[int, int, int]] = 224,
+    is_training: bool = False,
+    no_aug: bool = False,
+    train_crop_mode: Optional[str] = None,
+    scale: Optional[Tuple[float, float]] = None,
+    ratio: Optional[Tuple[float, float]] = None,
+    hflip: float = 0.5,
+    vflip: float = 0.0,
+    color_jitter: Union[float, Tuple[float, ...]] = 0.4,
+    color_jitter_prob: Optional[float] = None,
+    grayscale_prob: float = 0.0,
+    gaussian_blur_prob: float = 0.0,
+    auto_augment: Optional[str] = None,
+    interpolation: str = "bilinear",
+    mean: Tuple[float, ...] = IMAGENET_DEFAULT_MEAN,
+    std: Tuple[float, ...] = IMAGENET_DEFAULT_STD,
+    re_prob: float = 0.0,
+    re_mode: str = "const",
+    re_count: int = 1,
+    re_num_splits: int = 0,
+    crop_pct: Optional[float] = None,
+    crop_mode: Optional[str] = None,
+    crop_border_pixels: Optional[int] = None,
+    tf_preprocessing: bool = False,
+    use_prefetcher: bool = False,
+    separate: bool = False,
+    trivial_augment: bool = False,
+    rand_augment: bool = False,
+    ra_num_ops: int = 2,
+    ra_magnitude: int = 8,
 ):
     """
 
@@ -400,6 +421,7 @@ def create_transform(
     if tf_preprocessing and use_prefetcher:
         assert not separate, "Separate transforms not supported for TF preprocessing"
         from timm.data.tf_preprocessing import TfPreprocessTransform
+
         transform = TfPreprocessTransform(
             is_training=is_training,
             size=img_size,
@@ -443,7 +465,9 @@ def create_transform(
                 ra_magnitude=ra_magnitude,
             )
         else:
-            assert not separate, "Separate transforms not supported for validation preprocessing"
+            assert (
+                not separate
+            ), "Separate transforms not supported for validation preprocessing"
             transform = transforms_imagenet_eval(
                 img_size,
                 interpolation=interpolation,

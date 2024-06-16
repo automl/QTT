@@ -1,9 +1,12 @@
 import logging
 import os
+import random
 from datetime import datetime
 from pathlib import Path
-from random import randint
 from time import sleep
+
+import numpy as np
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,7 @@ def setup_outputdir(path, create_dir=True, warn_if_exist=True, path_suffix=None)
                 path = _path
                 break
             except FileExistsError:
-                sleep(randint(1, 10))
+                sleep(1)
                 continue
         else:
             raise RuntimeError("Too many jobs startet at the same time.")
@@ -43,3 +46,13 @@ def setup_outputdir(path, create_dir=True, warn_if_exist=True, path_suffix=None)
             )
     path = os.path.expanduser(path)  # replace ~ with absolute path if it exists
     return path
+
+
+def fix_random_seeds(seed=42):
+    """
+    Fix random seeds.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)

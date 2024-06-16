@@ -1,69 +1,34 @@
-from collections import defaultdict
 import logging
 import random
-import time
-from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from scipy.stats import norm
 
-from qtt.configuration.manager import ConfigManager
+from qtt.optimizers.surrogates.dyhpo import DyHPO
+from qtt.optimizers.surrogates.estimator import CostEstimator
 from qtt.utils.log_utils import set_logger_verbosity
-from qtt.utils.qt_utils import QTaskStatus, QTunerResult
-
-from qtt.optimizers.surrogates.surrogate import Surrogate
 
 logger = logging.getLogger("QuickOptimizer")
 
 
 class QuickOptimizer:
-    """
-    The QuickTuneOptimizer is the main element for the QuickTune optimization process.
-
-    The QuickTuneOptimizer class provides methods for training the surrogate model,
-    predicting the performances of hyperparameter configurations, suggesting the next
-    hyperparameter configuration to evaluate, observing the learning curve of a hyperparameter
-    configuration, and updating the information dictionary with the current HPO iteration info.
-
-    Args
-    ----
-    surrogate: nn.Module
-        The surrogate model to be used for the optimization process.
-    config_manager: ConfigurationManager
-        The configuration manager object that contains the configuration space.
-    metaset: MetaSet
-        The MetaSet object that contains the metafeatures of the dataset.
-    num_configs: int
-        The number of configurations to sample from the configuration space.
-    metafeatures: Optional[torch.Tensor]
-        The metafeatures of the dataset.
-    max_benchmark_epochs: int, default = 50
-        The maximum number of epochs to benchmark the hyperparameter configurations.
-    fantasize_steps: int, default = 1
-        The number of steps to fantasize the hyperparameter configurations.
-    acq_func: str, default = "ei"
-        The acquisition function to be used for the optimization process.
-    explore_factor: float, default = 0.0
-        The exploration factor for the acquisition function.
-    output_path: str, default = "."
-        The path to save the output files.
-    """
-
-    n_iter_no_change = 3
+    configs: np.ndarray
+    n_iter_no_change: int | None = None
     tol = 0.0
+    no_improvement_patience = 0
 
     def __init__(
         self,
-        surrogate: Surrogate,
-        config_manager: ConfigManager,
-        num_configs: int,
+        dyhpo: DyHPO,
+        cost_estimator: Optional[CostEstimator] = None,
         metafeatures: Optional[torch.Tensor] = None,
         max_budget: int = 50,
         fantasize_steps: int = 1,
         acq_fn: str = "ei",
         explore_factor: float = 0.0,
-        output_path: str = ".",
         verbosity: int = 2,
         seed: Optional[int] = None,
     ):
@@ -75,15 +40,10 @@ class QuickOptimizer:
             np.random.seed(seed)
             torch.manual_seed(seed)
 
-        self.cm = config_manager
-        self.metafeatures = metafeatures
-        self.surrogate = surrogate
+        self.dyhpo = dyhpo
+        self.cost_estimator = cost_estimator
 
-        self.sample_configs = self.cm.sample_configuration(num_configs)
-        self.candidate_configs = self.cm.preprocess_configurations(
-            self.sample_configs,
-            standardize=True,
-        ).values
+        self.metafeatures = metafeatures
 
         self.max_budget = max_budget
         self.fantasize_stepsize = fantasize_steps
@@ -94,62 +54,90 @@ class QuickOptimizer:
         self.eval_count = 0
 
         self.incumbent = -1
-        self.incumbent_score = float("-inf")
+        self.incumbent_score = 0.0
         self.info_dict = dict()
         self.finished_configs = set()
         self.evaluated_configs = set()
-        self.budgets: dict[int, List[int]] = defaultdict(list)
+
+        self.results: dict[int, List[int]] = defaultdict(list)
         self.scores: dict[int, List[float]] = defaultdict(list)
         self.costs: dict[int, List[float]] = defaultdict(list)
-        self.score_history = {i: np.full(3, 0.0) for i in range(num_configs)}
 
-        self.suggest_time_duration = 0
-        self.output_path = output_path
-
-        self.no_improvement_threshold = int(self.max_budget + 0.2 * self.max_budget)
-        self.no_improvement_patience = 0
         self.acq_func = acq_fn
         self.explore_factor = explore_factor
 
+    def set_configs(self, configs):  # np.ndarray | pd.DataFrame
+        self.configs = configs
+        if self.n_iter_no_change is not None:
+            self.score_history = {
+                i: np.zeros(self.n_iter_no_change) for i in range(len(configs))
+            }
+
     def set_metafeatures(
         self,
-        n_samples: int,
-        n_classes: int,
-        n_features: int,
-        n_channels: int,
+        t: Any,
     ):
         """
         Set the metafeatures of the dataset.
-
-        Args
-        ----
-        metafeatures: torch.Tensor
-            The metafeatures of the dataset.
         """
         meta_scale_factor = 10000  # TODO: automate this
-        t = torch.tensor(
-            [n_samples, n_classes, n_features, n_channels],
-            dtype=torch.float,
-        ).reshape(1, -1)
+        t = torch.tensor(t, dtype=torch.float)
         self.metafeatures = t / meta_scale_factor
 
-    def _get_train_data(self) -> Dict[str, torch.Tensor]:
+    def suggest(self) -> Tuple[int, int]:
         """
-        Prepare the data that will be the input to the surrogate.
+        Suggest the next hyperparameter configuration to evaluate.
 
         Returns
         -------
-        data: Dict[str, torch.Tensor]
-            The data that will be the input to the surrogate.
+        best_config_index: int
+            The index of the best hyperparameter configuration.
+        budget: int
+            The budget of the hyperparameter configuration.
+        """
+        # check if we still have random configurations to evaluate
+        if self.init_conf_eval_count < self.init_conf_nr:
+            index = self.init_conf_idx
+            budget = self.fantasize_stepsize
+            self.init_conf_idx += 1
+
+        else:
+            mean, std, budgets, costs = self._predict()
+            ranks = self.find_suggested_config(mean, std, budgets, costs)
+            ranks = [idx for idx in ranks if idx not in self.finished_configs]
+            index = ranks[-1]
+
+            # decide for what budget we will evaluate the most promising hyperparameter configuration next.
+            budget = self.fantasize_stepsize
+            if index in self.results:
+                budget = self.results[index][-1]
+                budget += self.fantasize_stepsize
+                # if fantasize_stepsize is bigger than 1
+                budget = min(budget, self.max_budget)
+        return index, budget
+
+    def _get_train_data(self) -> Dict[str, torch.Tensor]:
+        """
+        Get the training data for the surrogate model.
+        Training dataconsists of the evaluated hyperparameter configurations and their
+        associated larning curves.
         """
 
-        config, target, budget, curve = self._get_history_configs()
-
-        # normalize data
+        config, target, budget, curve = [], [], [], []
+        for idx in self.evaluated_configs:
+            _budgets = self.results[idx]
+            _scores = self.scores[idx]
+            for n in range(len(_scores)):
+                config.append(self.configs[idx])
+                budget.append(_budgets[n])
+                target.append(_scores[n])
+                _curve = _scores[:n] + [0.0] * (self.max_budget - n)
+                curve.append(_curve)
+        # np.array(configs), np.array(targets), np.array(budgets), np.array(curves)
         config = torch.tensor(config, dtype=torch.float)
         budget = torch.tensor(budget, dtype=torch.float) / self.max_budget
-        curve = torch.tensor(curve, dtype=torch.float) / 100
-        target = torch.tensor(target, dtype=torch.float) / 100
+        curve = torch.tensor(curve, dtype=torch.float)
+        target = torch.tensor(target, dtype=torch.float)
 
         metafeat = None
         if self.metafeatures is not None:
@@ -165,12 +153,12 @@ class QuickOptimizer:
 
         return data  # type: ignore
 
-    def _fit_surrogate(self, restart: bool = False):
+    def _fit_surrogate(self):
         """
-        Train the surrogate model with the observed hyperparameter configurations.
+        Fit the surrogate model with the observed hyperparameter configurations.
         """
         data = self._get_train_data()
-        self.surrogate.train_pipeline(data=data, restart=restart)
+        self.dyhpo.fit_pipeline(data=data)
 
     def _predict(
         self,
@@ -194,7 +182,7 @@ class QuickOptimizer:
         t_budget /= self.max_budget
         t_config = torch.tensor(config, dtype=torch.float)
 
-        t_curve = torch.tensor(curve, dtype=torch.float) / 100
+        t_curve = torch.tensor(curve, dtype=torch.float)
 
         t_metafeat = None
         if self.metafeatures is not None:
@@ -208,149 +196,76 @@ class QuickOptimizer:
         }
         train_data = self._get_train_data()
 
-        mean, std, cost = self.surrogate.predict_pipeline(train_data, test_data)
-
+        mean, std = self.dyhpo.predict_pipeline(train_data, test_data)
         mean = mean.cpu().detach().numpy()
         std = std.cpu().detach().numpy()
-        cost = cost.squeeze().cpu().detach().numpy() if cost is not None else None
+
+        cost = None
+        if self.cost_estimator is not None:
+            cost = self.cost_estimator(**test_data)
+            cost = cost.squeeze().cpu().detach().numpy()
 
         return mean, std, budget, cost
 
-    def suggest(self) -> Tuple[int, int]:
-        """
-        Suggest the next hyperparameter configuration to evaluate.
+    def observe(self, results: dict | list[dict]):
+        if isinstance(results, dict):
+            results = [results]
 
-        Returns
-        -------
-        best_config_index: int
-            The index of the best hyperparameter configuration.
-        budget: int
-            The budget of the hyperparameter configuration.
-        """
-        # check if we still have random configurations to evaluate
-        if self.init_conf_eval_count < self.init_conf_nr:
-            index = self.init_conf_idx
-            budget = self.fantasize_stepsize
-            self.init_conf_idx += 1
-            return index, budget
+        for result in results:
+            score = result["score"]
+            budget = result["budget"]
+            config_id = result["config_id"]
+            status = result["status"]
+            cost = result["cost"]
 
-        else:
-            mean, std, budgets, costs = self._predict()
-            ranks = self.find_suggested_config(mean, std, budgets, costs)
-            ranks = [idx for idx in ranks if idx not in self.finished_configs]
-            index = ranks[-1]
+            if not status:
+                self.finished_configs.add(config_id)
 
-            # decide for what budget we will evaluate the most promising hyperparameter configuration next.
-            if index in self.budgets:
-                budget = self.budgets[index][-1]
-                budget += self.fantasize_stepsize
-                # if fantasize_stepsize is bigger than 1
-                budget = min(budget, self.max_budget)
             else:
-                budget = self.fantasize_stepsize
+                if config_id in self.results:
+                    self.results[config_id].append(budget)
+                    self.scores[config_id].append(score)
+                    self.costs[config_id].append(cost)
+                else:
+                    self.results[config_id] = [budget]
+                    self.scores[config_id] = [score]
+                    self.costs[config_id] = [cost]
+                    self.init_conf_eval_count += 1
 
-        return index, budget
+            if score >= 1.0 or budget >= self.max_budget:
+                self.finished_configs.add(config_id)
 
-    def observe(
-        self,
-        index: int,
-        budget: int,
-        result: QTunerResult,
-    ):
-        """
-        Observe the learning curve of a hyperparameter configuration.
+            if self.incumbent_score < score:
+                self.incumbent = config_id
+                self.incumbent_score = score
+                self.no_improvement_patience = 0
+            else:
+                self.no_improvement_patience += 1
 
-        Args
-        ----
-        index: int
-            The index of the hyperparameter configuration.
-        budget: int
-            The budget of the hyperparameter configuration.
-        result:
-            The performance of the hyperparameter configuration.
+            if self.n_iter_no_change is not None:
+                n_last_iter = self.score_history[config_id]
+                if not np.any(score + self.tol > n_last_iter):
+                    self.finished_configs.add(config_id)
+                self.score_history[config_id] = np.roll(
+                    self.score_history[config_id], 1
+                )
+                self.score_history[config_id][0] = score
 
-        Returns
-        -------
-        overhead_time: float
-            The overhead time of the iteration.
-        """
-        observe_time_start = time.time()
-
-        score = result.score
-        if result.status == QTaskStatus.ERROR:
-            self.finished_configs.add(index)
-            score = 0.0
-
-        # if score >= (1 - threshold)
-        # maybe accept config as finished before reaching max performance ??? TODO
-        if score >= 90 or budget >= self.max_budget:
-            self.finished_configs.add(index)
-
-        if result.status == QTaskStatus.SUCCESS:
-            self.budgets[index].append(budget)
-            self.scores[index].append(score)
-            self.costs[index].append(result.time)
-            self.evaluated_configs.add(index)
-            self.eval_count += 1
-            self.init_conf_eval_count = len(self.evaluated_configs)
-
-        if self.n_iter_no_change is not None:
-            n_last_iter = self.score_history[index]
-            if not np.any(score + self.tol > n_last_iter):
-                self.finished_configs.add(index)
-            self.score_history[index] = np.roll(self.score_history[index], 1)
-            self.score_history[index][0] = score
-
-        if self.incumbent_score < score:
-            self.incumbent = index
-            self.incumbent_score = score
-            self.no_improvement_patience = 0
-        else:
-            self.no_improvement_patience += 1
-
-        # initialization phase over. Now we can sample from the model.
+        # Initialization phase over. Fit the surrogate model
         if self.init_conf_eval_count >= 10:
-            restart = True
-            # restart the model if we have not seen enough evaluations
-            if self.eval_count > 32:  # TODO: make this a parameter
-                restart = False
-            # restart the model if we have not seen any improvement for a while
-            if self.no_improvement_patience > self.no_improvement_threshold:
-                restart = True
+            self._fit_surrogate()
 
-            self._fit_surrogate(restart=restart)
-
-        observe_time = time.time() - observe_time_start
-        overhead_time = observe_time + self.suggest_time_duration
-        return overhead_time
-
-    def _get_candidate_configs(
-        self,
-    ) -> Tuple[np.ndarray, ...]:
-        """
-        Generate candidate configurations that will be fantasized upon.
-
-        Returns
-        -------
-        configurations: List
-            The hyperparameter configurations.
-        hp_indices: List
-            The indices of the hyperparameter configurations.
-        hp_budgets: List
-            The budgets of the hyperparameter configurations.
-        learning_curves: List
-            The learning curves of the hyperparameter configurations.
-        """
+    def _get_candidate_configs(self) -> Tuple[np.ndarray, ...]:
         budgets = []
         curves = []
 
-        for index in range(len(self.candidate_configs)):
-            if index in self.budgets:
-                budget = max(self.budgets[index])
+        for index in range(len(self.configs)):
+            if index in self.results:
+                budget = max(self.results[index])
                 curve = self.scores[index]
             else:  # config was not evaluated before, fantasize
-                budget = 0
-                curve = [0.0]
+                budget = 1
+                curve = []
 
             # pad the curve with zeros if it is not fully evaluated
             curve = curve + [0.0] * (self.max_budget - len(curve))
@@ -358,49 +273,11 @@ class QuickOptimizer:
             budgets.append(budget)
             curves.append(curve)
 
-        configs = self.candidate_configs
+        configs = self.configs
         budgets = np.array(budgets)
         curves = np.array(curves)
 
         return configs, budgets, curves
-
-    def _get_history_configs(
-        self,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Generate the configurations, labels, budgets and curves based on
-        the history of evaluated configurations.
-
-        Returns
-        -------
-        configs: List
-            The hyperparameter configurations.
-        train_labels: List
-            The performances of the hyperparameter configurations.
-        train_budgets: List
-            The budgets of the hyperparameter configurations.
-        train_curves: List
-            The learning curves of the hyperparameter configurations.
-        """
-        configs = []
-        targets = []
-        budgets = []
-        curves = []
-
-        for hp_index in self.evaluated_configs:
-            budget = self.budgets[hp_index]
-            scores = self.scores[hp_index]
-            config = self.candidate_configs[hp_index]
-
-            for n in range(len(scores)):
-                configs.append(config)
-                budgets.append(budget[n])
-                targets.append(scores[n])
-                curve = scores[:n]
-                curve = curve + [0.0] * (self.max_budget - len(curve))
-                curves.append(curve)
-
-        return np.array(configs), np.array(targets), np.array(budgets), np.array(curves)
 
     def find_suggested_config(
         self,

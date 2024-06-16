@@ -1,14 +1,6 @@
 {
-  "extractor_cfg": {
-    "in_features": 68,
-    "enc_slice_ranges": [
-      24
-    ]
-  },
-  "predictor_cfg": {
-    "in_features": 68,
-    "enc_slice_ranges": [
-      24
-    ]
-  }
+  "in_features": [
+    24,
+    44
+  ]
 }

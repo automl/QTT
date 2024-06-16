@@ -3,11 +3,13 @@ import logging
 import os
 import time
 from collections import defaultdict
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
-from qtt.optimizers.quick import QuickOptimizer
+from qtt.configuration.manager import ConfigManager
+from qtt.optimizers import QuickOptimizer
+from qtt.optimizers import RandomOptimizer
 from qtt.utils.log_utils import add_log_to_file, set_logger_verbosity
-from qtt.utils.qt_utils import QTunerResult, get_dataset_metafeatures
+from qtt.utils.qt_utils import get_dataset_metafeatures
 from qtt.utils.utils import setup_outputdir
 
 logger = logging.getLogger("QuickTuner")
@@ -20,8 +22,9 @@ class QuickTuner:
 
     def __init__(
         self,
-        optimizer: QuickOptimizer,
-        objective_function: Callable[..., QTunerResult],
+        optimizer: QuickOptimizer | RandomOptimizer,
+        config_manager: ConfigManager,
+        objective_function: Callable[..., Union[dict, list[dict]]],
         path: Optional[str] = None,
         path_suffix: Optional[str] = None,
         verbosity: int = 4,
@@ -33,13 +36,13 @@ class QuickTuner:
         self.exp_dir = os.path.join(self.path, "exp")
         self._setup_log_to_file(self._log_to_file, self._log_file_path)
 
-        self._validate_init_kwargs(kwargs)
+        self._validate_kwargs(kwargs)
 
         self.optimizer = optimizer
+        self.cm = config_manager
         self.objective_function = objective_function
 
         self.history = {"score": [], "cost": [], "configs": defaultdict(list)}
-
 
     def _setup_log_to_file(self, log_to_file: bool, log_file_path: str) -> None:
         if log_to_file:
@@ -52,84 +55,92 @@ class QuickTuner:
     def fit(
         self,
         data_path: str,
+        num_configs: int = 128,
         train_split: str = "train",
         val_split: str = "val",
         time_limit: Optional[float] = None,
     ):
+        if time_limit is not None:
+            assert time_limit > 0, "Time limit must be greater than 0."
+
         logger.info("Starting QuickTuner fit.")
         logger.info(f"QuickTuneTool will save results to {self.path}")
 
-        if time_limit is None:
-            time_limit = float("inf")
-
-        # if self.config.include_metafeatures:
         metafeat = get_dataset_metafeatures(data_path)
-        self.optimizer.set_metafeatures(**metafeat)
+        self.optimizer.set_metafeatures(metafeat)
 
-        data_info = {
-            "train-split": train_split,
-            "val-split": val_split,
-            "num_classes": metafeat["n_classes"],
-        }
+        configs = self.cm.sample_configuration(num_configs)
+        self.save_configs(configs)
 
-        orig_configs = self.optimizer.sample_configs
-        configs = {i: config.get_dictionary() for i, config in enumerate(orig_configs)}
-        with open(os.path.join(self.path, "configs.json"), "w") as f:
-            json.dump(configs, f, indent=2, sort_keys=True)
+        self.optimizer.set_configs(self.cm.preprocess_configurations(configs))
 
         start_time = time.time()
         while True:
             config_id, budget = self.optimizer.suggest()
             logger.info(f"Optimizer suggests: {config_id} with budget {budget}")
 
-            config = self.optimizer.sample_configs[config_id].get_dictionary()
+            config = configs[config_id].get_dictionary()
 
-            result = self.objective_function(
-                budget=budget,
+            task_info = {
+                "config_id": config_id,
+                "data_path": data_path,
+                "train-split": train_split,
+                "val-split": val_split,
+                "num_classes": metafeat[1],
+                "output_dir": self.exp_dir,
+                "verbosity": self.verbosity,
+            }
+
+            results = self.objective_function(
                 config=config,
-                config_id=config_id,
-                data_path=data_path,
-                data_info=data_info,
-                output=self.exp_dir,
-                verbosity=self.verbosity,
+                budget=budget,
+                task_info=task_info,
             )
 
-            logger.info("Evaluation complete.")
-            logger.info(f"Score: {result.score:.3f}% | Time: {result.time:.1f}s")
+            self.process_results(results)
+            self.optimizer.observe(results)
 
-            self.optimizer.observe(config_id, budget, result)
-
-            cost = time.time() - start_time
-
-            self._save_results(result, cost)
-
-            if (time.time() - start_time) > time_limit:
-                logger.info("Time limit reached.")
-                break
+            if time_limit is not None:
+                time_passed = time.time() - start_time
+                if time_passed > time_limit:
+                    logger.info("Time limit reached.")
+                    break
 
         logger.info("QuickTuner fit complete.")
 
         return self
 
-    def _save_results(self, result: QTunerResult, cost: float) -> None:
-        """
-        Save the results of the tuning process.
+    def process_results(self, results):
+        if isinstance(results, dict):
+            results = [results]
 
-        Returns:
-            None
-        """
-        idx = result.idx
-        score = result.score
-        self.history["configs"][idx].append(score)
-        self.history["score"].append(score)
-        self.history["cost"].append(cost)
+        for result in results:
+            config_id = result["config_id"]
+            score = result["score"]
+            cost = result["cost"]
+            self.history["configs"][config_id].append(score)
+            self.history["score"].append(score)
+            self.history["cost"].append(cost)
+
+            if result["status"]:
+                logger.info("Evaluation completed.")
+                logger.info(
+                    f"Score: {result['score']:.3f}% | Time: {result['cost']:.1f}s"
+                )
+            else:
+                logger.info("Evaluation failed.")
+                logger.info(f"Error: {result['info']}")
 
         # save to file
         with open(os.path.join(self.path, "history.json"), "w") as f:
-            logger.debug("Saving history")
             json.dump(self.history, f, indent=2, sort_keys=True)
 
-    def _validate_init_kwargs(self, kwargs: dict) -> None:
+    def save_configs(self, configs) -> None:
+        configs = {i: config.get_dictionary() for i, config in enumerate(configs)}
+        with open(os.path.join(self.path, "configs.json"), "w") as f:
+            json.dump(configs, f, indent=2, sort_keys=True)
+
+    def _validate_kwargs(self, kwargs: dict) -> None:
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)

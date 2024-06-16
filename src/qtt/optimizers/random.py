@@ -1,22 +1,23 @@
 import logging
 import random
+from collections import defaultdict
 from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
 
-from qtt.configuration.manager import ConfigManager
 from qtt.utils.log_utils import set_logger_verbosity
-from qtt.utils.qt_utils import QTaskStatus, QTunerResult
 
-logger = logging.getLogger("QuickOptimizer")
+logger = logging.getLogger("RandomOptimizer")
 
 
 class RandomOptimizer:
+    configs: np.ndarray
+    n_iter_no_change: int | None = None
+    tol: float = 0.0
+
     def __init__(
         self,
-        config_manager: ConfigManager,
-        num_configs: int,
         max_budget: int = 50,
         fantasize_steps: int = 1,
         verbosity: int = 2,
@@ -30,21 +31,24 @@ class RandomOptimizer:
             np.random.seed(seed)
             torch.manual_seed(seed)
 
-        self.cm = config_manager
-
-        self.sample_configs = self.cm.sample_configuration(num_configs)
-
-        self.num_configs = num_configs
         self.max_budget = max_budget
         self.fantasize_steps = fantasize_steps
 
         self.incumbent = -1
-        self.incumbent_score = float("-inf")
+        self.incumbent_score = 0.0
         self.info_dict = dict()
         self.finished_configs = set()
-        self.results: dict[int, List[int]] = dict()
-        self.scores: dict[int, List[float]] = dict()
-        self.costs: dict[int, List[float]] = dict()
+
+        self.results: dict[int, List[int]] = defaultdict(list)
+        self.scores: dict[int, List[float]] = defaultdict(list)
+        self.costs: dict[int, List[float]] = defaultdict(list)
+
+    def set_configs(self, configs):  # np.ndarray | pd.DataFrame
+        self.configs = configs
+        if self.n_iter_no_change is not None:
+            self.score_history = {
+                i: np.zeros(self.n_iter_no_change) for i in range(len(configs))
+            }
 
     def set_metafeatures(self, *args, **kwargs):
         pass
@@ -61,16 +65,16 @@ class RandomOptimizer:
             The budget of the hyperparameter configuration.
         """
         # check if we still have random configurations to evaluate
-        if len(self.finished_configs) == len(self.sample_configs):
+        if len(self.finished_configs) == len(self.configs):
             return -1, -1
 
         # get the index of the next configuration to evaluate
         while True:
-            index = random.choice(range(self.num_configs))
+            index = random.choice(range(len(self.configs)))
             if index not in self.finished_configs:
                 break
-        
-        # get the budget of the next configuration to evaluate    
+
+        # get the budget of the next configuration to evaluate
         if index in self.results:
             budget = max(self.results[index]) + self.fantasize_steps
         else:
@@ -78,52 +82,42 @@ class RandomOptimizer:
 
         return index, budget
 
-    def observe(
-        self,
-        index: int,
-        budget: int,
-        result: QTunerResult,
-    ):
-        """
-        Observe the learning curve of a hyperparameter configuration.
+    def observe(self, results: dict | list[dict]):
+        if isinstance(results, dict):
+            results = [results]
 
-        Args
-        ----
-        index: int
-            The index of the hyperparameter configuration.
-        budget: int
-            The budget of the hyperparameter configuration.
-        result:
-            The performance of the hyperparameter configuration.
+        for result in results:
+            score = result["score"]
+            budget = result["budget"]
+            config_id = result["config_id"]
+            status = result["status"]
+            cost = result["cost"]
 
-        Returns
-        -------
-        overhead_time: float
-            The overhead time of the iteration.
-        """
-        # if y is an undefined value, append 0 as the overhead since we finish here.
-        score = result.score
-        if result.status == QTaskStatus.ERROR:
-            self.finished_configs.add(index)
-            return 0
+            if not status:
+                self.finished_configs.add(config_id)
 
-        # if score >= (100 - threshold)
-        # maybe accept config as finished before reaching max performance and do not evaluate further
-        if score >= 100 or budget >= self.max_budget:
-            self.finished_configs.add(index)
+            else:
+                if config_id in self.results:
+                    self.results[config_id].append(budget)
+                    self.scores[config_id].append(score)
+                    self.costs[config_id].append(cost)
+                else:
+                    self.results[config_id] = [budget]
+                    self.scores[config_id] = [score]
+                    self.costs[config_id] = [cost]
 
-        if index in self.results:
-            self.results[index].append(budget)
-            self.scores[index].append(score)
-        else:
-            self.results[index] = [budget]
-            self.scores[index] = [score]
+            if score >= 1.0 or budget >= self.max_budget:
+                self.finished_configs.add(config_id)
 
-        if self.incumbent_score < score:
-            self.incumbent = index
-            self.incumbent_score = score
-            self.no_improvement_patience = 0
-        else:
-            self.no_improvement_patience += 1
+            if self.incumbent_score < score:
+                self.incumbent = config_id
+                self.incumbent_score = score
 
-        return 1
+            if self.n_iter_no_change is not None:
+                n_last_iter = self.score_history[config_id]
+                if not np.any(score + self.tol > n_last_iter):
+                    self.finished_configs.add(config_id)
+                self.score_history[config_id] = np.roll(
+                    self.score_history[config_id], 1
+                )
+                self.score_history[config_id][0] = score

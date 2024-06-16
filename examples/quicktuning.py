@@ -1,7 +1,7 @@
-from qtt.utils.setup import get_opt_from_pretrained
+from qtt.factory import get_opt
 from qtt.tuners import QuickTuner
-from qtt.finetune.finetune_wrapper import eval_finetune_conf
+from qtt.finetune.cv.image_classification import finetune_script
 
-opt = get_opt_from_pretrained("mtlbm/mini")
-qt = QuickTuner(opt, eval_finetune_conf)
+opt, cm = get_opt("mtlbm/micro")
+qt = QuickTuner(opt, cm, finetune_script)
 qt.fit(data_path="path/to/dataset", time_limit=3600)

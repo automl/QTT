@@ -1,31 +1,30 @@
-import logging
 import os
+from collections import deque
+import time
 from typing import Optional
 
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from qtt.data.loader import MetaDataLoader
 from qtt.data.dataset import MTLBMDataSet
-from qtt.optimizers.surrogates.surrogate import Surrogate
+from qtt.data.loader import MetaDataLoader
+from qtt.optimizers.surrogates.dyhpo import DyHPO
 
 
-logger = logging.getLogger("metatrain")
-
-
-def meta_train_surrogate(
-    surrogate: Surrogate,
+def metatrain_dyhpo(
+    dyhpo: DyHPO,
     metaset: MTLBMDataSet,
-    batch_size: int = 32,
+    batch_size: int = 64,
     lr: float = 1e-3,
     train_iter: int = 10000,
     val_iter: int = 100,
-    val_freq: int = 20,
+    val_freq: int = 100,
     use_scheduler: bool = True,
     device="auto",
-    cache_dir="~/.cache/qtt/meta",
-    ckpt_name="ckpt.pth",
+    cache_dir="~/.cache/qtt/metatrain",
+    ckpt_name="dyhpo.pth",
     seed: Optional[int] = None,
+    log_freq: int = 50,
 ):
     cache_dir = os.path.expanduser(cache_dir)
     os.makedirs(cache_dir, exist_ok=True)
@@ -33,87 +32,162 @@ def meta_train_surrogate(
 
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    else:
-        device = torch.device(device)
-    surrogate.to(device)
-    surrogate.train()
+    device = torch.device(device)
 
-    loader = MetaDataLoader(metaset, batch_size, seed)
-    for metric in "perf", "cost":
-        optimizer = torch.optim.Adam(surrogate.parameters(), lr)
-        scheduler = None
-        if use_scheduler:
-            scheduler = CosineAnnealingLR(optimizer, train_iter, eta_min=1e-7)
+    dyhpo.train()
+    dyhpo.to(device)
 
-        min_loss = float("inf")
-        for it in range(1, train_iter + 1):
-            optimizer.zero_grad()
-            batch = loader.get_batch(metric=metric)
-            for key, item in batch.items():
-                batch[key] = item.to(device)
+    loader = MetaDataLoader(metaset, batch_size, 0.1, seed)
+    optimizer = torch.optim.Adam(dyhpo.parameters(), lr)
+    scheduler = None
+    if use_scheduler:
+        scheduler = CosineAnnealingLR(optimizer, train_iter, eta_min=1e-7)
 
-            if metric == "perf":
-                loss = surrogate(**batch)
-                loss.backward()
-                optimizer.step()
-            else:
+    min_loss = float("inf")
+    loss_history = deque(maxlen=20)
+    start_time = time.time()
+    for it in range(1, train_iter + 1):
+        optimizer.zero_grad()
+        batch = loader.get_batch(metric="perf")
+        for key, item in batch.items():
+            batch[key] = item.to(device)
+
+        target = batch.pop("target")
+        loss = dyhpo.train_step(batch, target)
+        loss.backward()
+        optimizer.step()
+
+        loss_history.append(loss.item())
+        scheduler.step() if scheduler is not None else None
+
+        if it % log_freq == 0:
+            _loss = sum(loss_history) / len(loss_history)
+            elapsed = time.time() - start_time
+            eta = elapsed / it * (train_iter - it)
+            print(
+                f"TRAIN  [{it:}/{train_iter}]:",
+                f"loss: {_loss:.3f}",
+                f"lenghtscale: {dyhpo.gp_model.covar_module.base_kernel.lengthscale.item():.3f}",
+                f"noise: {dyhpo.gp_model.likelihood.noise.item():.3f}",  # type: ignore
+                f"eta: {eta:.2f}s",
+                sep="  ",
+            )
+
+        if not it % val_freq:
+            dyhpo.eval()
+            val_error = 0
+            for _ in range(val_iter):
+                batch = loader.get_batch(mode="val")
+                for key, item in batch.items():
+                    batch[key] = item.to(device)
                 target = batch.pop("target")
-                batch.pop("curve")
-                batch.pop("budget")
-                logits = surrogate.cost_predictor(**batch)
-                loss = torch.nn.functional.mse_loss(logits.reshape(target.shape), target)
-                loss.backward()
-                optimizer.step()
+                pred = dyhpo.predict(batch)
+                mean = pred.mean
+                loss = torch.nn.functional.l1_loss(mean, target)
+                val_error += loss.item()
 
-            scheduler.step() if scheduler is not None else None
+            if val_error < min_loss:
+                min_loss = val_error
+                torch.save(dyhpo.state_dict(), save_path)
+                print(f"VAL  [{it}]: Checkpoint saved with val-error: {val_error:.3f}")
+            else:
+                print(f"VAL  [{it}]: val-error: {val_error:.3f}")
 
-            if not it % val_freq:
-                surrogate.eval()
-                val_loss = validate(surrogate, metric, val_iter, device, loader)
+            dyhpo.train()
 
-                logger.debug(f"Step {it}: val_loss={val_loss:.4f}")
-                if val_loss < min_loss:
-                    min_loss = val_loss
-                    torch.save(surrogate.state_dict(), save_path)
-                    logger.info(f"Iter {it}: Checkpoint saved with Val-loss {val_loss:.4f}")
-                    print(f"Iter {it}: Checkpoint saved with Val-loss {val_loss:.4f}")
-                surrogate.train()
+    # Load the model with the best validation error
+    print(f"Loading the model with the best validation error: {min_loss:.3f}")
+    dyhpo.load_state_dict(torch.load(os.path.join(cache_dir, ckpt_name)))
 
-        # Load the model with the best validation error
-        logger.info(f"Loading the model with the best validation error: {min_loss:.4f}")
-        surrogate.load_state_dict(torch.load(os.path.join(cache_dir, ckpt_name)))
+    return dyhpo
+
+
+def metatrain_cost_estimator(
+    model: torch.nn.Module,
+    metaset: MTLBMDataSet,
+    batch_size: int = 64,
+    lr: float = 1e-3,
+    train_iter: int = 10000,
+    val_iter: int = 100,
+    val_freq: int = 100,
+    use_scheduler: bool = True,
+    device="auto",
+    cache_dir="~/.cache/qtt/meta",
+    ckpt_name="ckpt.pth",
+    seed: Optional[int] = None,
+    log_freq: int = 50,
+):
+    cache_dir = os.path.expanduser(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
+    save_path = os.path.join(cache_dir, ckpt_name)
+
+    metric = "cost"
+
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
+    model.train()
+    model.to(device)
+
+    loader = MetaDataLoader(metaset, batch_size, 0.1, seed)
     
-    return surrogate
+    optimizer = torch.optim.Adam(model.parameters(), lr)
+    scheduler = None
+    if use_scheduler:
+        scheduler = CosineAnnealingLR(optimizer, train_iter, eta_min=1e-7)
 
+    min_loss = float("inf")
+    loss_history = deque(maxlen=20)
+    start_time = time.time()
+    for it in range(1, train_iter + 1):
+        optimizer.zero_grad()
+        batch = loader.get_batch(metric=metric)
+        for key, item in batch.items():
+            batch[key] = item.to(device)
 
-def validate(surrogate, metric, val_iter, device, loader):
-    val_loss = 0
-    for _ in range(val_iter):
-        if metric == "perf":
-            batch_train = loader.get_batch(mode="val")
-            batch_test = loader.get_batch(mode="val")
-            for key, item in batch_train.items():
-                batch_train[key] = item.to(device)
-            for key, item in batch_test.items():
-                batch_test[key] = item.to(device)
+        target = batch.pop("target")
+        output = model(**batch)
+        loss = torch.nn.functional.mse_loss(output, target)
+        loss.backward()
+        optimizer.step()
 
-            target = batch_test.pop("target")
+        loss_history.append(loss.item())
+        scheduler.step() if scheduler is not None else None
 
-            mean, _, _ = surrogate.predict_pipeline(batch_train, batch_test)
-            loss = torch.nn.functional.l1_loss(mean, target)
+        if it % log_freq == 0:
+            _loss = sum(loss_history) / len(loss_history)
+            elapsed = time.time() - start_time
+            eta = elapsed / it * (train_iter - it)
+            print(
+                f"TRAIN [{it}/{train_iter}]:",
+                f"loss: {_loss:.3f}",
+                f"eta: {eta:.2f}s",
+                sep="  ",
+            )
 
-        else:
-            batch = loader.get_batch(mode="val", metric=metric)
-            batch.pop("curve")
-            batch.pop("budget")
-            for key, item in batch.items():
-                batch[key] = item.to(device)
-            target = batch.pop("target")
+        if not it % val_freq:
+            model.eval()
+            val_error = 0
+            for _ in range(val_iter):
+                batch = loader.get_batch(mode="val", metric=metric)
+                for key, item in batch.items():
+                    batch[key] = item.to(device)
+                target = batch.pop("target")
+                output = model(**batch)
+                loss = torch.nn.functional.l1_loss(output, target)
+                val_error += loss.item()
 
-            logits = surrogate.cost_predictor(**batch)
-            logits = logits.reshape(target.shape)
-            loss = torch.nn.functional.l1_loss(logits, target)
+            if val_error < min_loss:
+                min_loss = val_error
+                torch.save(model.state_dict(), save_path)
+                print(f"VAL  [{it}]: Checkpoint saved with val-error: {val_error:.3f}")
+            else:
+                print(f"VAL  [{it}]: val-error: {val_error:.3f}")
 
-        val_loss += loss.item()
-    val_loss /= val_iter
-    return val_loss
+            model.train()
+
+    # Load the model with the best validation error
+    print(f"Loading the model with the best validation error: {min_loss:.3f}")
+    model.load_state_dict(torch.load(os.path.join(cache_dir, ckpt_name)))
+
+    return model

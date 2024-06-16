@@ -1,10 +1,15 @@
 from qtt.data.dataset import MTLBMDataSet
-from qtt.tools import get_surrogate, meta_train_surrogate
+from qtt.optimizers.surrogates.dyhpo import DyHPO
+from qtt.tools import metatrain_dyhpo
 
 meta_path = "../data/mtlbm/micro"
 data = MTLBMDataSet(meta_path)
 data.save_data_info()
 
-surrogate, config = get_surrogate(data, "dyhpo")
-surrogate = meta_train_surrogate(surrogate, data)
-surrogate.save_checkpoint()
+# setup DyHPO
+n_features = data.num_hps
+hps = data.hyperparameter_names
+n_model = len([x for x in hps if x.startswith("model")])
+
+dyhpo = DyHPO(in_features=[n_model, n_features - n_model])
+dyhpo = metatrain_dyhpo(dyhpo, data)

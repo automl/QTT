@@ -34,15 +34,18 @@ class MTLBMDataSet:
         standardize: bool = True,
         sort_hp: bool = True,
         return_tensor: bool = True,
+        *,
+        max_budget: int = 50,
     ):
         self.root = root
         self.standardize = standardize
         self.sort_hp = sort_hp
         self.return_tensor = return_tensor
+        self.max_budget = max_budget
 
         self.configs = self._load_configs()
         self.curve_norm = {"cost": 1.0, "perf": 100.0}
-        self.curve_metrics = ["cost", "perf"]
+        self.metrics = ["cost", "perf"]
         self.curves = self._load_curves()
         self.metafeatures = self._load_meta()
         self.datasets, self.ds_to_exp_ids = self._get_info()
@@ -69,7 +72,7 @@ class MTLBMDataSet:
 
     def _load_curves(self):
         curves = {}
-        for curve in self.curve_metrics:
+        for curve in self.metrics:
             path = os.path.join(self.root, f"{curve}.csv")
             data = pd.read_csv(path, index_col=0)
             curves[curve] = data
@@ -103,7 +106,7 @@ class MTLBMDataSet:
         if dataset is None:
             dataset = random.choice(self.datasets)
         assert dataset in self.datasets, f"{dataset} not found in the MetaSet"
-        assert metric in self.curve_metrics, f"{metric} not found in the MetaSet"
+        assert metric in self.metrics, f"{metric} not found in the MetaSet"
 
         exp_idx = random.sample(self.ds_to_exp_ids[dataset], batch_size)
         exp_idx = list(map(int, exp_idx))
@@ -113,11 +116,12 @@ class MTLBMDataSet:
         for idx in exp_idx:
             crv = self.curves[metric].loc[idx].values
             crv = crv[~pd.isnull(crv)].tolist()
-            bdgt = random.randint(1, len(crv))
+            bdgt = random.randint(1, self.max_budget)
+            bdgt = min(bdgt, len(crv))
             crv = crv[:bdgt]
             trgt = crv[-1]
             crv = crv[:-1]
-            crv = crv + [0] * (50 - len(crv))
+            crv = crv + [0] * (self.max_budget - len(crv))
             curve.append(crv)
             target.append(trgt)
             budget.append(bdgt)
@@ -130,7 +134,7 @@ class MTLBMDataSet:
             config = torch.tensor(config, dtype=torch.float32)
             curve = torch.tensor(curve, dtype=torch.float32) / curve_norm
             target = torch.tensor(target, dtype=torch.float32) / curve_norm
-            budget = torch.tensor(budget, dtype=torch.float32) / 50
+            budget = torch.tensor(budget, dtype=torch.float32) / self.max_budget
             metafeat = torch.tensor(metafeat, dtype=torch.float32)
 
         batch = dict(
@@ -141,11 +145,13 @@ class MTLBMDataSet:
             metafeat=metafeat,
         )
         return batch
-
-    def get_hyperparameters_names(self) -> List[str]:
+    
+    @property
+    def hyperparameter_names(self) -> List[str]:
         return list(self.configs.columns)
 
-    def get_num_hps(self) -> int:
+    @property
+    def num_hps(self) -> int:
         return len(self.configs.columns)
 
     def get_num_datasets(self) -> int:

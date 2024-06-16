@@ -33,7 +33,24 @@ import torch.backends.cuda as cuda
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torchvision.utils
-import yaml
+from .utils.custom_timm import create_loader
+from .utils.finetuning_stategies import (
+    BatchSpectralShrinkage,
+    BehavioralRegularization,
+    CoTuningLoss,
+    Relationship,
+    SPRegularization,
+    convert_to_stoch_norm,
+)
+from .utils.utils import (
+    compute_gradient_norm,
+    extend_metrics,
+    get_dataset_path,
+    get_icgen_dataset_info_json,
+    get_number_of_classes,
+    prepare_model_for_finetuning,
+)
+from qtt.utils.log_utils import set_logger_verbosity
 from timm import utils
 from timm.data import (
     AugMixDataset,
@@ -60,25 +77,6 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
-
-from qtt.finetune.utils.custom_timm import create_loader
-from qtt.finetune.utils.finetuning_stategies import (
-    BatchSpectralShrinkage,
-    BehavioralRegularization,
-    CoTuningLoss,
-    Relationship,
-    SPRegularization,
-    convert_to_stoch_norm,
-)
-from qtt.finetune.utils.utils import (
-    compute_gradient_norm,
-    extend_metrics,
-    get_dataset_path,
-    get_icgen_dataset_info_json,
-    get_number_of_classes,
-    prepare_model_for_finetuning,
-)
-from qtt.utils.log_utils import set_logger_verbosity
 
 try:
     from apex import amp  # type: ignore
@@ -124,7 +122,6 @@ logger = logging.getLogger("finetune")
 def main(args: Namespace):
     verbosity = args.verbosity if hasattr(args, "verbosity") else 1
     set_logger_verbosity(verbosity, logger)
-    device_count = torch.cuda.device_count()
     if torch.cuda.is_available():
         cuda.matmul.allow_tf32 = True
         cudnn.benchmark = True
@@ -644,36 +641,34 @@ def main(args: Namespace):
         else:
             lr_scheduler.step(start_epoch)
 
-    if args.initial_test:
-        eval_metrics = validate(
-            model,
-            loader_eval,
-            validate_loss_fn,
-            args,
-            amp_autocast=amp_autocast,  # type: ignore
-            return_features=return_features,
-            return_source_output=return_source_output,
-        )
-    else:
-        eval_metrics = {"loss": -1, "top1": -1, "top5": -1}
+    # if args.initial_test:
+    #     eval_metrics = validate(
+    #         model,
+    #         loader_eval,
+    #         validate_loss_fn,
+    #         args,
+    #         amp_autocast=amp_autocast,  # type: ignore
+    #         return_features=return_features,
+    #         return_source_output=return_source_output,
+    #     )
+    # else:
+    #     eval_metrics = {"loss": -1, "top1": -1, "top5": -1}
 
-    if utils.is_primary(args):
-        logger.info(
-            f'Scheduled epochs: {num_epochs}. LR stepped per {"epoch" if lr_scheduler.t_in_epochs else "update"}.'
-        )
+    # if utils.is_primary(args):
+    #     logger.info(
+    #         f'Scheduled epochs: {num_epochs}. LR stepped per {"epoch" if lr_scheduler.t_in_epochs else "update"}.'
+    #     )
 
-        initial_general_log = {
-            "initial_eval_loss": eval_metrics["loss"],
-            "initial_eval_top1": eval_metrics["top1"],
-            "initial_eval_top5": eval_metrics["top5"],
-            "device_count": device_count,
-        }
+    #     initial_general_log = {
+    #         "initial_eval_loss": eval_metrics["loss"],
+    #         "initial_eval_top1": eval_metrics["top1"],
+    #         "initial_eval_top5": eval_metrics["top5"],
+    #         "device_count": device_count,
+    #     }
 
-        with open(os.path.join(output_dir, "initial_general_log.yml"), "w") as f:
-            yaml.dump(initial_general_log, f, default_flow_style=False)
-
-        # if device_count > 1: model = nn.DataParallel(model).to(device)
-        invalid_loss_value = False
+    #     with open(os.path.join(output_dir, "initial_general_log.yml"), "w") as f:
+    #         yaml.dump(initial_general_log, f, default_flow_style=False)
+    out = OrderedDict()
 
     try:
         for epoch in range(start_epoch, num_epochs):
@@ -706,7 +701,7 @@ def main(args: Namespace):
                 lr_scheduler=lr_scheduler,
                 saver=saver,
                 output_dir=output_dir,
-                amp_autocast=amp_autocast,
+                amp_autocast=amp_autocast,  # type: ignore
                 loss_scaler=loss_scaler,
                 model_ema=model_ema,
                 mixup_fn=mixup_fn,
@@ -765,6 +760,11 @@ def main(args: Namespace):
                     log_wandb=args.log_wandb and has_wandb,
                 )
 
+            budget = epoch + 1
+            out[epoch] = {"budget": budget}
+            out[epoch].update([("train_" + k, v) for k, v in train_metrics.items()])
+            out[epoch].update([("eval_" + k, v) for k, v in eval_metrics.items()])
+
             if not args.test_mode and saver is not None:
                 # save proper checkpoint with eval metric
                 save_metric = eval_metrics[eval_metric]
@@ -777,31 +777,15 @@ def main(args: Namespace):
                 lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
 
             if np.isnan(train_metrics["loss"]):
-                invalid_loss_value = True
                 break
 
     except KeyboardInterrupt:
-        pass
+        raise KeyboardInterrupt
 
     if best_metric is not None:
         logger.info("*** Best metric: {0} (epoch {1})".format(best_metric, best_epoch))
 
-    if args.test_mode:
-        with open(os.path.join(current_dir, "experiments", "results.txt"), "a+") as f:
-            # with open(f"experiments/results.txt", 'a+') as f:
-            if not invalid_loss_value:
-                f.write(f"ok {args.experiment}\n")
-            else:
-                f.write(f"Diverged {args.experiment}\n")
-
-    if utils.is_primary(args):
-        final_general_log = {
-            "max_memory_allocated": torch.cuda.max_memory_allocated(),
-            "invalid_loss_value": invalid_loss_value,
-        }
-
-        with open(os.path.join(output_dir, "final_general_log.yml"), "w") as f:
-            yaml.dump(final_general_log, f, default_flow_style=False)
+    return out
 
 
 @extend_metrics
@@ -847,12 +831,6 @@ def train_one_epoch(
     num_updates = epoch * num_batches_per_epoch
 
     for batch_idx, (input, target) in enumerate(loader):
-        if args.test_mode:
-            if batch_idx > 1:
-                print(
-                    "--------- test_mode set to True: breaking epoch for test reasons ---------"
-                )
-                break
 
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
@@ -887,7 +865,7 @@ def train_one_epoch(
                     loss += backbone_regularization(layer_outputs_source, features)
                 if isinstance(backbone_regularization, CoTuningLoss):
                     source_label = (
-                        torch.from_numpy(relationship[target.cpu().numpy()])
+                        torch.from_numpy(relationship[target.cpu().numpy()])  # type: ignore
                         .to(device)
                         .float()
                     )
@@ -936,7 +914,7 @@ def train_one_epoch(
             ) * temp_backbone_grad_norm
             head_grad_norm = (num_logs - 1) * head_grad_norm / num_logs + (
                 1 / num_logs
-            ) * temp_head_grad_norm
+            ) * temp_head_grad_norm  # type: ignore
 
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
@@ -1107,7 +1085,7 @@ def validate(
 
 
 if __name__ == "__main__":
-    from qtt.finetune.utils.build_parser import build_parser
+    from .utils.build_parser import build_parser
 
     parser = build_parser()
     args = parser.parse_args()

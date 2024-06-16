@@ -59,10 +59,5 @@ def get_dataset_metafeatures(
         valset = ImageFolder(val_path)
         n_samples += len(valset)
 
-    meta_features = {
-        "n_samples": n_samples,
-        "n_classes": n_classes,
-        "n_features": n_features,
-        "n_channels": n_channels,
-    }
+    meta_features = [n_samples, n_classes, n_features, n_channels]
     return meta_features

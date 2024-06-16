@@ -1,265 +1,16 @@
 import json
 import logging
 import os
-from copy import deepcopy
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import inspect
 
 import gpytorch
 import torch
 
-from qtt.optimizers.surrogates.models import CostPredictor, FeatureExtractor
-from qtt.optimizers.surrogates.surrogate import Surrogate
+from .encoder import FeatureEncoder
 
 logger = logging.getLogger("dyhpo")
-
-
-class DyHPO(Surrogate):
-    """
-    The DyHPO DeepGP model. This version of DyHPO also includes a Cost Predictor.
-    """
-
-    lr = 1e-4
-    train_steps: int = 1000
-    refine_steps: int = 50
-    meta_trained: bool = False
-    meta_checkpoint: Optional[str] = None
-
-    def __init__(
-        self,
-        extractor_cfg: dict,
-        predictor_cfg: dict,
-        **kwargs,
-    ):
-        super().__init__()
-        self.extractor_cfg = extractor_cfg
-        self.predictor_cfg = predictor_cfg
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.feature_extractor: FeatureExtractor
-        self.cost_predictor: CostPredictor
-        self.gp: GPRegressionModel
-        self.gll: gpytorch.likelihoods.GaussianLikelihood
-        self.mll: gpytorch.mlls.ExactMarginalLogLikelihood
-        self._reinit_()
-
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                logger.warning(f"Unknown parameter {key} for DyHPO.")
-
-    @classmethod
-    def from_pretrained(cls, name_or_path: str) -> "DyHPO":
-        """
-        Load a pretrained DyHPO model from a checkpoint.
-
-        Args
-        ----
-        path : str
-            The path to the checkpoint file.
-
-        Returns
-        -------
-        DyHPO
-            The loaded DyHPO model.
-        """
-        root = name_or_path
-        config = json.load(open(os.path.join(root, "config.json"), "r"))
-        model = cls(config["extractor_cfg"], config["predictor_cfg"])
-        model_path = os.path.join(root, "surrogate.pth")
-        model.load_meta_checkpoint(model_path)
-        return model
-
-    def _reinit_(self):
-        """
-        Restart the surrogate model from scratch.
-        """
-        if self.meta_checkpoint is not None:
-            self.load_meta_checkpoint(self.meta_checkpoint)
-        else:
-            self.feature_extractor = FeatureExtractor(**self.extractor_cfg)
-            self.cost_predictor = CostPredictor(**self.predictor_cfg)
-            self.gll = gpytorch.likelihoods.GaussianLikelihood()
-            self.gp = GPRegressionModel(None, None, self.gll)
-            self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.gll, self.gp)
-        self.to(self.device)
-
-    def save_checkpoint(self, path: str = ".", with_config: bool = True):
-        """
-        Save the state to a checkpoint file.
-
-        Args
-        ----
-        checkpoint : str
-            The path to the checkpoint file.
-        """
-        state = self.state_dict()
-        save_path = os.path.join(path, "surrogate.pth")
-        torch.save(state, save_path)
-        logger.info(f"Saved model to {save_path}")
-        if with_config:
-            config = {
-                "extractor_cfg": self.extractor_cfg,
-                "predictor_cfg": self.predictor_cfg,
-            }
-            config_path = os.path.join(path, "config.json")
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=2)
-            logger.info(f"Saved config to {config_path}")
-
-
-    def load_meta_checkpoint(self, path: str):
-        """
-        Load the state from a checkpoint.
-
-        Args
-        ----
-        checkpoint : str
-            The path to the checkpoint file.
-        """
-        self.meta_checkpoint = path
-        self.meta_trained = True
-        state = torch.load(path, map_location="cpu")
-        msg = self.load_state_dict(state)
-        logger.info(f"Loaded pretrained weights from {path} with msg: {msg}")
-
-    def forward(
-        self,
-        config: torch.Tensor,
-        budget: torch.Tensor,
-        curve: torch.Tensor,
-        target: torch.Tensor,
-        metafeat: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        proj = self.feature_extractor(config, budget, curve, metafeat)
-
-        self.gp.set_train_data(proj, target, False)
-        output = self.gp(proj)
-
-        loss = -self.mll(output, target)  # type: ignore
-        return loss
-
-    def train_pipeline(self, data: Dict[str, torch.Tensor], restart: bool = False):
-        """
-        Trains the surrogate with the provided data.
-
-        Args
-        ----
-        data : Dict[str, torch.Tensor]
-            A dictionary containing the input data for training.
-            It should contain the following keys:
-                - config: The hyperparameters configurations.
-                - budget: The budget values.
-                - curve: The learning curves.
-                - target: The target values.
-                - metafeat: The metafeatures.
-        """
-        config = data["config"]
-        if config.size(0) == 1:  # skip training if only one point is provided
-            self.eval()
-            return
-
-        initial_state = self._get_state()
-        optimizer = torch.optim.Adam(self.parameters(), self.lr)
-        training_errored = False
-        self.train()
-
-        for key, item in data.items():
-            data[key] = item.to(self.device)
-
-        if restart:
-            self._reinit_()
-
-        for i in range(self.refine_steps):
-            try:
-                loss = self.forward(**data)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                # print(
-                #     "Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f"
-                #     % (
-                #         i + 1,
-                #         self.refine_steps,
-                #         loss.item(),
-                #         self.gp.covar_module.base_kernel.lengthscale.item(),
-                #         self.gp.likelihood.noise.item(),
-                #     )
-                # )
-            except Exception as e:
-                logger.warn(f"The following error happened while training: {e}")
-                self.restart = True
-                training_errored = True
-                break
-
-        if training_errored:
-            self.load_state_dict(initial_state)
-        self.eval()
-
-    def predict_pipeline(
-        self,
-        train_data: Dict[str, torch.Tensor],
-        test_data: Dict[str, torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Predicts the target values for the test data.
-
-        Args
-        ----
-        train_data : Dict[str, torch.Tensor]
-            A dictionary containing the input data for training.
-            It should contain the following
-                - config: The hyperparameters configurations.
-                - target: The target values.
-                - budget: The budget values.
-                - curve: The learning curves.
-                - metafeat: The metafeatures.
-        test_data : Dict[str, torch.Tensor]
-            A dictionary containing the input data for testing.
-            It should contain the following
-                - config: The hyperparameters configurations.
-                - budget: The budget values.
-                - curve: The learning curves.
-                - target: The target values.
-                - metafeat: The metafeatures.
-
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-            A tuple containing the predicted means, the predicted standard deviations
-            and the predicted costs.
-        """
-        self.eval()
-
-        for key, item in train_data.items():
-            if item is not None:
-                train_data[key] = item.to(self.device)
-        for key, item in test_data.items():
-            if item is not None:
-                test_data[key] = item.to(self.device)
-
-        target = train_data.pop("target")
-        test_data.pop("target", None)
-
-        with torch.no_grad():  #, gpytorch.settings.fast_pred_var():
-            train_feat = self.feature_extractor(**train_data)
-            self.gp.set_train_data(train_feat, target, False)
-
-            test_feat = self.feature_extractor(**test_data)
-            pred = self.gll(self.gp(test_feat))
-
-            test_data.pop("curve", None)
-            test_data.pop("budget", None)
-            cost = self.cost_predictor(**test_data)
-
-        mean = pred.mean.reshape(-1)
-        std = pred.stddev.reshape(-1)
-
-        return mean, std, cost
-
-    def _get_state(self):
-        state = deepcopy(self.state_dict())
-        return state
 
 
 class GPRegressionModel(gpytorch.models.ExactGP):
@@ -277,3 +28,159 @@ class GPRegressionModel(gpytorch.models.ExactGP):
         mean = self.mean_module(x)
         covar = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean, covar)  # type: ignore
+
+
+class DyHPO(torch.nn.Module):
+    refine_steps = 50
+    refine_lr = 1e-3
+
+    def __init__(
+        self,
+        in_features: int | List[int],
+        **kwargs,
+    ):
+        super().__init__()
+        enc_kwargs = dict()
+        for key, value in kwargs.items():
+            if key in inspect.signature(FeatureEncoder.__init__).parameters.keys():
+                enc_kwargs[key] = value
+            else:
+                logger.warning(f"Unknown parameter {key} for DyHPO.")
+
+        self.encoder = FeatureEncoder(in_features, **enc_kwargs)
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        self.gp_model = GPRegressionModel(
+            train_x=None,
+            train_y=None,
+            likelihood=self.likelihood,
+        )
+        self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(
+            self.likelihood,
+            self.gp_model,
+        )
+
+    @torch.no_grad()
+    def predict(self, data: Dict[str, torch.Tensor]):
+        proj = self.encoder(**data)
+        pred = self.likelihood(self.gp_model(proj))
+        return pred
+
+    def train_step(self, train_x: Dict[str, torch.Tensor], train_y: torch.Tensor):
+        train_x = self.encoder(**train_x)
+        self.gp_model.set_train_data(train_x, train_y, False)
+        output = self.gp_model(train_x)
+        loss = -self.mll(output, train_y)  # type: ignore
+        return loss
+
+    def fit_pipeline(self, data: Dict[str, torch.Tensor]):
+        self.train()
+
+        # create optimizer
+        optimizer = torch.optim.Adam(self.parameters(), self.refine_lr)
+
+        target = data.pop("target")
+
+        for i in range(self.refine_steps):
+            optimizer.zero_grad()
+            feat = self.encoder(**data)
+            self.gp_model.set_train_data(feat, target, False)
+            output = self.gp_model(feat)
+            loss = -self.mll(output, target)  # type: ignore
+            loss.backward()
+            optimizer.step()
+
+            # print(
+            #     "Iter %2d/%2d - Loss: %1.3f lengthscale: %1.3f noise: %1.3f"
+            #     % (
+            #         i + 1,
+            #         self.train_steps,
+            #         loss.item(),
+            #         self.model.covar_module.base_kernel.lengthscale.item(),
+            #         self.model.likelihood.noise.item(),  # type: ignore
+            #     )
+            # )
+
+        self.eval()
+
+    def predict_pipeline(
+        self,
+        train_data: Dict[str, torch.Tensor],
+        test_data: Dict[str, torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self.eval()
+
+        train_y = train_data.pop("target")
+        with torch.no_grad():  # , gpytorch.settings.fast_pred_var():
+            train_x = self.encoder(**train_data)
+            self.gp_model.set_train_data(train_x, train_y, False)
+
+            test_x = self.encoder(**test_data)
+            pred = self.likelihood(self.gp_model(test_x))
+
+        mean = pred.mean.reshape(-1)
+        std = pred.stddev.reshape(-1)
+        return mean, std
+
+    @classmethod
+    def from_pretrained(cls, root: str) -> "DyHPO":
+        """
+        Load a pretrained DyHPO model from a checkpoint.
+
+        Args
+        ----
+        path : str
+            The path to the checkpoint file.
+
+        Returns
+        -------
+        DyHPO
+            The loaded DyHPO model.
+        """
+        config = json.load(open(os.path.join(root, "config.json"), "r"))
+        model = cls(**config)
+        model_path = os.path.join(root, "dyhpo.pth")
+        model.load_meta_checkpoint(model_path)
+        return model
+
+    # def _get_state(self):
+    #     state = deepcopy(self.state_dict())
+    #     return state
+
+    # def save_checkpoint(self, path: str = ".", with_config: bool = True):
+    #     """
+    #     Save the state to a checkpoint file.
+
+    #     Args
+    #     ----
+    #     checkpoint : str
+    #         The path to the checkpoint file.
+    #     """
+    #     state = self.state_dict()
+    #     save_path = os.path.join(path, "surrogate.pth")
+    #     torch.save(state, save_path)
+    #     logger.info(f"Saved model to {save_path}")
+    #     if with_config:
+    #         config = {
+    #             "extractor_cfg": self.extractor_cfg,
+    #             "predictor_cfg": self.predictor_cfg,
+    #         }
+    #         config_path = os.path.join(path, "config.json")
+    #         with open(config_path, "w") as f:
+    #             json.dump(config, f, indent=2)
+    #         logger.info(f"Saved config to {config_path}")
+
+    def load_meta_checkpoint(self, path: str):
+        """
+        Load the state from a checkpoint.
+
+        Args
+        ----
+        checkpoint : str
+            The path to the checkpoint file.
+        """
+        self.meta_checkpoint = path
+        self.meta_trained = True
+        state = torch.load(path, map_location="cpu")
+        msg = self.load_state_dict(state)
+        logger.info(f"Loaded pretrained weights from {path} with msg: {msg}")
+

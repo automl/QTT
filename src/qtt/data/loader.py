@@ -21,6 +21,7 @@ class MetaDataLoader:
         self,
         dataset: MTLBMDataSet,
         batch_size: int,
+        test_size: float = 0.1,
         seed: Optional[int] = None,
     ):
         self.dataset = dataset
@@ -28,7 +29,7 @@ class MetaDataLoader:
 
         datasets = self.dataset.get_datasets()
         self.train_split, self.val_split = train_test_split(
-            datasets, test_size=0.2, random_state=seed
+            datasets, test_size=test_size, random_state=seed
         )
 
     def get_batch(
