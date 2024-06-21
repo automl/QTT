@@ -125,7 +125,7 @@ class QuickTuner:
             if result["status"]:
                 logger.info("Evaluation completed.")
                 logger.info(
-                    f"Score: {result['score']:.3f}% | Time: {result['cost']:.1f}s"
+                    f"Score: {100 * result['score']:.3f}% | Time: {result['cost']:.1f}s"
                 )
             else:
                 logger.info("Evaluation failed.")

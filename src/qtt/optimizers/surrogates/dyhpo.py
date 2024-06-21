@@ -111,8 +111,8 @@ class DyHPO(torch.nn.Module):
 
         train_y = train_data.pop("target")
         with torch.no_grad():  # , gpytorch.settings.fast_pred_var():
-            train_x = self.encoder(**train_data)
-            self.gp_model.set_train_data(train_x, train_y, False)
+            # train_x = self.encoder(**train_data)
+            # self.gp_model.set_train_data(train_x, train_y, False)
 
             test_x = self.encoder(**test_data)
             pred = self.likelihood(self.gp_model(test_x))

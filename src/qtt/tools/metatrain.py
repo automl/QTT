@@ -19,6 +19,7 @@ def metatrain_dyhpo(
     train_iter: int = 10000,
     val_iter: int = 100,
     val_freq: int = 100,
+    test_size: float = 0.1,
     use_scheduler: bool = True,
     device="auto",
     cache_dir="~/.cache/qtt/metatrain",
@@ -37,7 +38,7 @@ def metatrain_dyhpo(
     dyhpo.train()
     dyhpo.to(device)
 
-    loader = MetaDataLoader(metaset, batch_size, 0.1, seed)
+    loader = MetaDataLoader(metaset, batch_size, test_size, seed)
     optimizer = torch.optim.Adam(dyhpo.parameters(), lr)
     scheduler = None
     if use_scheduler:
@@ -86,6 +87,7 @@ def metatrain_dyhpo(
                 loss = torch.nn.functional.l1_loss(mean, target)
                 val_error += loss.item()
 
+            val_error /= val_iter
             if val_error < min_loss:
                 min_loss = val_error
                 torch.save(dyhpo.state_dict(), save_path)
@@ -110,6 +112,7 @@ def metatrain_cost_estimator(
     train_iter: int = 10000,
     val_iter: int = 100,
     val_freq: int = 100,
+    test_size: float = 0.1,
     use_scheduler: bool = True,
     device="auto",
     cache_dir="~/.cache/qtt/meta",
@@ -129,7 +132,7 @@ def metatrain_cost_estimator(
     model.train()
     model.to(device)
 
-    loader = MetaDataLoader(metaset, batch_size, 0.1, seed)
+    loader = MetaDataLoader(metaset, batch_size, test_size, seed)
     
     optimizer = torch.optim.Adam(model.parameters(), lr)
     scheduler = None
@@ -144,8 +147,9 @@ def metatrain_cost_estimator(
         batch = loader.get_batch(metric=metric)
         for key, item in batch.items():
             batch[key] = item.to(device)
-
         target = batch.pop("target")
+        target = target.view(-1, 1)
+
         output = model(**batch)
         loss = torch.nn.functional.mse_loss(output, target)
         loss.backward()
@@ -173,10 +177,13 @@ def metatrain_cost_estimator(
                 for key, item in batch.items():
                     batch[key] = item.to(device)
                 target = batch.pop("target")
+                target = target.view(-1, 1)
+
                 output = model(**batch)
                 loss = torch.nn.functional.l1_loss(output, target)
                 val_error += loss.item()
-
+            
+            val_error /= val_iter
             if val_error < min_loss:
                 min_loss = val_error
                 torch.save(model.state_dict(), save_path)

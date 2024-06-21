@@ -22,21 +22,18 @@ def get_opt_from_pretrained(name_or_path: str):
         _, version = name_or_path.split("/")
         file_path = os.path.dirname(os.path.abspath(__file__))
         root = os.path.join(file_path, "pretrained", "mtlbm", version)
-        config_path = os.path.join(root, "mtlbm.json")
-        meta_data_path = os.path.join(root, "meta_info.csv")
-        surrogate_path = os.path.join(root, version)
     else:
         assert os.path.exists(name_or_path), f"{name_or_path} does not exist."
         root = name_or_path
-        config_path = os.path.join(root, "mtlbm.json")
-        meta_data_path = os.path.join(root, "meta_info.csv")
-        surrogate_path = root
+        
+    config_path = os.path.join(root, "mtlbm.json")
+    meta_data_path = os.path.join(root, "meta_info.csv")
 
     config_space = cs_json.read(open(config_path, "r").read())
     meta_data = pd.read_csv(meta_data_path, index_col=0)
     manager = ConfigManager(config_space, meta_data)
-    dyhpo = DyHPO.from_pretrained(surrogate_path)
-    cost_estimator = CostEstimator.from_pretrained(surrogate_path)
+    dyhpo = DyHPO.from_pretrained(root)
+    cost_estimator = CostEstimator.from_pretrained(root)
 
     optimizer = QuickOptimizer(dyhpo, cost_estimator)
     return optimizer, manager

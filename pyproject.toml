@@ -6,6 +6,7 @@ dependencies = [
   "torchvision >= 0.15.1",
   "ConfigSpace >= 0.6.0",
   "gpytorch >= 1.9.0",
+  "numpy < 2",
   "pandas >= 2.0.0",
   "pyyaml >= 6.0.1",
   "scikit-learn >= 1.1",
@@ -30,4 +31,4 @@ classifiers = [
 license = { file = "LICENSE" }
 
 [project.urls]
-Homepage = "https://github.com/rapanti/quicktune"
+Homepage = "https://github.com/automl/QTT"
