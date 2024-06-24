@@ -17,6 +17,7 @@ Find more information in the paper `Quick-Tune: Quickly Learning Which Pre Train
 Create environment:
 ```bash
 conda create -n qtt python=3.10
+conda activate qtt
 ```
 
 To install the QuickTuneTool, you can simply use `pip`:
