@@ -30,5 +30,11 @@ classifiers = [
 ]
 license = { file = "LICENSE" }
 
+[tool.setuptools.packages.find]
+where = ["src"] # <-- this changed
+
+[tool.setuptools.package-data]
+"*" = ["*.*"] # <-- this changed
+
 [project.urls]
 Homepage = "https://github.com/automl/QTT"
