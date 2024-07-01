@@ -27,7 +27,7 @@ class QuickTuner:
         objective_function: Callable[..., Union[dict, list[dict]]],
         path: Optional[str] = None,
         path_suffix: Optional[str] = None,
-        verbosity: int = 4,
+        verbosity: int = 2,
         **kwargs,
     ):
         self.verbosity = verbosity
@@ -43,6 +43,7 @@ class QuickTuner:
         self.objective_function = objective_function
 
         self.history = {"score": [], "cost": [], "configs": defaultdict(list)}
+        self.incumbent = {"config": None, "score": 0, "cost": float("inf")}
 
     def _setup_log_to_file(self, log_to_file: bool, log_file_path: str) -> None:
         if log_to_file:
@@ -55,7 +56,7 @@ class QuickTuner:
     def fit(
         self,
         data_path: str,
-        num_configs: int = 128,
+        num_configs: int = 256,
         train_split: str = "train",
         val_split: str = "val",
         time_limit: Optional[float] = None,
@@ -122,6 +123,11 @@ class QuickTuner:
             self.history["score"].append(score)
             self.history["cost"].append(cost)
 
+            if score > self.incumbent["score"]:
+                self.incumbent["score"] = score
+                self.incumbent["cost"] = cost
+                self.incumbent["config"] = config_id
+                
             if result["status"]:
                 logger.info("Evaluation completed.")
                 logger.info(
@@ -146,3 +152,13 @@ class QuickTuner:
                 setattr(self, key, value)
             else:
                 logger.warning(f"Unknown argument: {key}")
+
+    def get_incumbent(self):
+        path = os.path.join(self.exp_dir, str(self.incumbent["config"]))
+        path_to_model = os.path.join(path, "model_best.pth.tar")
+
+        with open(os.path.join(self.path, "configs.json"), "r") as f:
+            config_id = str(self.incumbent["config"])
+            config = json.load(f)[config_id]
+        
+        return path_to_model, config

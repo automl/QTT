@@ -16,7 +16,7 @@ logger = logging.getLogger("QuickOptimizer")
 
 class QuickOptimizer:
     configs: np.ndarray
-    n_iter_no_change: int | None = None
+    n_iter_no_change: int | None = 3
     tol = 0.0
     no_improvement_patience = 0
 
@@ -49,7 +49,7 @@ class QuickOptimizer:
         self.fantasize_stepsize = fantasize_steps
 
         self.init_conf_idx = 0
-        self.init_conf_nr = 10
+        self.init_conf_nr = 5
         self.init_conf_eval_count = 0
         self.eval_count = 0
 
@@ -67,7 +67,7 @@ class QuickOptimizer:
         self.explore_factor = explore_factor
 
     def set_configs(self, configs):  # np.ndarray | pd.DataFrame
-        self.configs = configs
+        self.configs = configs.to_numpy()
         if self.n_iter_no_change is not None:
             self.score_history = {
                 i: np.zeros(self.n_iter_no_change) for i in range(len(configs))

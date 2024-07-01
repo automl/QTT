@@ -19,11 +19,6 @@ Create environment:
 conda create -n qtt python=3.10
 ```
 
-To install the QuickTuneTool, you can simply use `pip`:
-```bash
-pip install qtt
-```
-
 ### Install from source
 ```bash
 git clone https://github.com/automl/QTT
@@ -36,9 +31,9 @@ With this repo, we provide pretrained models for quick testing.
 ```python
 from qtt.factory import get_opt
 from qtt.tuners import QuickTuner
-from qtt.finetune.vs.image_classification import finetune_script
+from qtt.finetune.cv.image_classification import finetune_script
 
-opt, cm = get_opt_from_pretrained("mtlbm/mini")
+opt, cm = get_opt("mtlbm/micro", pretrained=True)
 qt = QuickTuner(opt, cm, finetune_script)
 qt.fit(data_path="path/to/dataset", time_limit=3600)
 ```
@@ -59,7 +54,8 @@ wget https://nc.informatik.uni-freiburg.de/index.php/s/K5gbJ72nNz873Ct/download/
 unzip mtlbm.zip
 ```
 
-### License
+And modify the meta-training [script](examples/create_surrogate.py) in the examples folder to your needs.
+
 
 ### Cite us
 

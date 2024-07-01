@@ -1,6 +1,6 @@
 [project]
 name = "quicktunetool"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
   "torch >= 2.0.0",
   "torchvision >= 0.15.1",
@@ -29,6 +29,12 @@ classifiers = [
   'Programming Language :: Python :: 3',
 ]
 license = { file = "LICENSE" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.*"]
 
 [project.urls]
 Homepage = "https://github.com/automl/QTT"
