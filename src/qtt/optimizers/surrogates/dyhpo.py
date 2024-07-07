@@ -109,7 +109,7 @@ class DyHPO(torch.nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         self.eval()
 
-        train_y = train_data.pop("target")
+        train_data.pop("target")
         with torch.no_grad():  # , gpytorch.settings.fast_pred_var():
             # train_x = self.encoder(**train_data)
             # self.gp_model.set_train_data(train_x, train_y, False)
@@ -183,4 +183,3 @@ class DyHPO(torch.nn.Module):
         state = torch.load(path, map_location="cpu")
         msg = self.load_state_dict(state)
         logger.info(f"Loaded pretrained weights from {path} with msg: {msg}")
-

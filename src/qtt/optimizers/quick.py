@@ -50,8 +50,9 @@ class QuickOptimizer:
 
         self.init_conf_idx = 0
         self.init_conf_nr = 5
-        self.init_conf_eval_count = 0
+        self.init_conf_count = 0
         self.eval_count = 0
+        self.init_nr = 10
 
         self.incumbent = -1
         self.incumbent_score = 0.0
@@ -96,7 +97,7 @@ class QuickOptimizer:
             The budget of the hyperparameter configuration.
         """
         # check if we still have random configurations to evaluate
-        if self.init_conf_eval_count < self.init_conf_nr:
+        if self.init_conf_count < self.init_conf_nr:
             index = self.init_conf_idx
             budget = self.fantasize_stepsize
             self.init_conf_idx += 1
@@ -222,6 +223,8 @@ class QuickOptimizer:
                 self.finished_configs.add(config_id)
 
             else:
+                self.eval_count += 1
+                self.evaluated_configs.add(config_id)
                 if config_id in self.results:
                     self.results[config_id].append(budget)
                     self.scores[config_id].append(score)
@@ -230,7 +233,7 @@ class QuickOptimizer:
                     self.results[config_id] = [budget]
                     self.scores[config_id] = [score]
                     self.costs[config_id] = [cost]
-                    self.init_conf_eval_count += 1
+                    self.init_conf_count += 1
 
             if score >= 1.0 or budget >= self.max_budget:
                 self.finished_configs.add(config_id)
@@ -252,7 +255,7 @@ class QuickOptimizer:
                 self.score_history[config_id][0] = score
 
         # Initialization phase over. Fit the surrogate model
-        if self.init_conf_eval_count >= 10:
+        if self.eval_count >= self.init_nr:
             self._fit_surrogate()
 
     def _get_candidate_configs(self) -> Tuple[np.ndarray, ...]:
