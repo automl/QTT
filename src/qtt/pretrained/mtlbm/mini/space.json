@@ -41,17 +41,21 @@
       "name": "clip_grad",
       "type": "ordinal",
       "sequence": [
-        "None",
+        0,
         1,
         10
       ],
-      "default": "None"
+      "default": 0
     },
     {
       "name": "cotuning_reg",
       "type": "ordinal",
       "sequence": [
-        0.0
+        0.0,
+        0.5,
+        1.0,
+        2.0,
+        4.0
       ],
       "default": 0.0
     },
@@ -73,12 +77,12 @@
       "name": "data_augmentation",
       "type": "categorical",
       "choices": [
-        "None",
-        "trivial_augment",
+        "auto_augment",
         "random_augment",
-        "auto_augment"
+        "trivial_augment",
+        "no_augment"
       ],
-      "default": "None",
+      "default": "no_augment",
       "weights": null
     },
     {
@@ -106,7 +110,7 @@
       "default": 0.0
     },
     {
-      "name": "epochs",
+      "name": "budget",
       "type": "constant",
       "value": 50
     },
@@ -114,11 +118,11 @@
       "name": "layer_decay",
       "type": "ordinal",
       "sequence": [
-        "None",
+        0.0,
         0.65,
         0.75
       ],
-      "default": "None"
+      "default": 0.0
     },
     {
       "name": "linear_probing",
@@ -360,7 +364,8 @@
       "type": "ordinal",
       "sequence": [
         2,
-        5
+        5,
+        10
       ],
       "default": 2
     },
@@ -368,6 +373,7 @@
       "name": "ra_magnitude",
       "type": "ordinal",
       "sequence": [
+        8,
         9,
         17
       ],

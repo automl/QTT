@@ -1,9 +1,9 @@
+import copy
+import inspect
 import json
 import logging
 import os
 from typing import Dict, List, Optional, Tuple
-
-import inspect
 
 import gpytorch
 import torch
@@ -31,6 +31,9 @@ class GPRegressionModel(gpytorch.models.ExactGP):
 
 
 class DyHPO(torch.nn.Module):
+    meta_trained = False
+    train_steps = 1000
+    train_lr = 1e-3
     refine_steps = 50
     refine_lr = 1e-3
 
@@ -45,7 +48,7 @@ class DyHPO(torch.nn.Module):
             if key in inspect.signature(FeatureEncoder.__init__).parameters.keys():
                 enc_kwargs[key] = value
             else:
-                logger.warning(f"Unknown parameter {key} for DyHPO.")
+                logger.warning(f"Unknown parameter '{key}' for DyHPO.")
 
         self.encoder = FeatureEncoder(in_features, **enc_kwargs)
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
@@ -73,14 +76,20 @@ class DyHPO(torch.nn.Module):
         return loss
 
     def fit_pipeline(self, data: Dict[str, torch.Tensor]):
+        state_dict = copy.deepcopy(self.state_dict())
+
+        target = data.pop("target")
+        pred = self.predict(data)
+        loss_pre = (pred.mean - target).abs().mean()
+
         self.train()
 
         # create optimizer
-        optimizer = torch.optim.Adam(self.parameters(), self.refine_lr)
+        lr = self.refine_lr if self.meta_trained else self.train_lr
+        optimizer = torch.optim.Adam(self.parameters(), lr)
 
-        target = data.pop("target")
-
-        for i in range(self.refine_steps):
+        steps = self.refine_steps if self.meta_trained else self.train_steps
+        for i in range(steps):
             optimizer.zero_grad()
             feat = self.encoder(**data)
             self.gp_model.set_train_data(feat, target, False)
@@ -89,7 +98,7 @@ class DyHPO(torch.nn.Module):
             loss.backward()
             optimizer.step()
 
-            # print(
+            # logger.debug(
             #     "Iter %2d/%2d - Loss: %1.3f lengthscale: %1.3f noise: %1.3f"
             #     % (
             #         i + 1,
@@ -101,6 +110,14 @@ class DyHPO(torch.nn.Module):
             # )
 
         self.eval()
+
+        pred = self.predict(data)
+        loss_aft = (pred.mean - target).abs().mean()
+
+        if loss_aft > loss_pre:
+            self.load_state_dict(state_dict)
+            logger.debug("no improvement, reverting to previous state.")
+        logger.debug(f"Loss before: {loss_pre:.4f}, after: {loss_aft:.4f}")
 
     def predict_pipeline(
         self,
@@ -122,62 +139,14 @@ class DyHPO(torch.nn.Module):
         return mean, std
 
     @classmethod
-    def from_pretrained(cls, root: str) -> "DyHPO":
-        """
-        Load a pretrained DyHPO model from a checkpoint.
-
-        Args
-        ----
-        path : str
-            The path to the checkpoint file.
-
-        Returns
-        -------
-        DyHPO
-            The loaded DyHPO model.
-        """
+    def from_pretrained(cls, root: str, ckp_name="dyhpo.pth") -> "DyHPO":
         config = json.load(open(os.path.join(root, "config.json"), "r"))
         model = cls(**config)
-        model_path = os.path.join(root, "dyhpo.pth")
-        model.load_meta_checkpoint(model_path)
+        ckp_path = os.path.join(root, ckp_name)
+        model._load_meta_checkpoint(ckp_path)
         return model
 
-    # def _get_state(self):
-    #     state = deepcopy(self.state_dict())
-    #     return state
-
-    # def save_checkpoint(self, path: str = ".", with_config: bool = True):
-    #     """
-    #     Save the state to a checkpoint file.
-
-    #     Args
-    #     ----
-    #     checkpoint : str
-    #         The path to the checkpoint file.
-    #     """
-    #     state = self.state_dict()
-    #     save_path = os.path.join(path, "surrogate.pth")
-    #     torch.save(state, save_path)
-    #     logger.info(f"Saved model to {save_path}")
-    #     if with_config:
-    #         config = {
-    #             "extractor_cfg": self.extractor_cfg,
-    #             "predictor_cfg": self.predictor_cfg,
-    #         }
-    #         config_path = os.path.join(path, "config.json")
-    #         with open(config_path, "w") as f:
-    #             json.dump(config, f, indent=2)
-    #         logger.info(f"Saved config to {config_path}")
-
-    def load_meta_checkpoint(self, path: str):
-        """
-        Load the state from a checkpoint.
-
-        Args
-        ----
-        checkpoint : str
-            The path to the checkpoint file.
-        """
+    def _load_meta_checkpoint(self, path: str):
         self.meta_checkpoint = path
         self.meta_trained = True
         state = torch.load(path, map_location="cpu")

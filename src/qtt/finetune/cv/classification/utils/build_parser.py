@@ -288,7 +288,7 @@ def build_parser():
         type=str,
         default="cosine",
         metavar="SCHEDULER",
-        help='LR scheduler (default: "step"',
+        help='LR scheduler (default: "cosine")',
     )
     group.add_argument(
         "--sched-on-updates",
@@ -527,18 +527,17 @@ def build_parser():
         help='Use TrivialAgument". (default: False)',
     )
 
-    # TODO: implement
     group.add_argument(
         "--random_augment",
         action="store_true",
         default=False,
-        help="Use RandAugmentation policy. (default: None)",
+        help="Use RandAugmentation policy. (default: False)",
     )
     group.add_argument(
-        "--ra_num_ops", type=int, default=2, help="todo. (default: None)"
+        "--ra_num_ops", type=int, default=2, help="todo. (default: 2)"
     )
     group.add_argument(
-        "--ra_magnitude", type=int, default=8, help="todo. (default: None)"
+        "--ra_magnitude", type=int, default=8, help="todo. (default: 8)"
     )
     group.add_argument(
         "--ra_num_magnitude_bins", type=int, default=31, help="todo. (default: None)"
@@ -546,7 +545,6 @@ def build_parser():
     group.add_argument(
         "--ra_interpolation", type=str, default="nearest", help="todo. (default: None)"
     )
-
     group.add_argument(
         "--aug-repeats",
         type=float,
@@ -914,7 +912,11 @@ def build_parser():
         help="whether to apply stochastic norm",
     )
     group.add_argument(
-        "--sp_reg", type=float, default=0.0, help="SP regularization. Default = 0."
+        "--sp-reg",
+        "--sp_reg",
+        type=float,
+        default=0.0,
+        help="SP regularization. Default = 0.",
     )
     group.add_argument(
         "--cotuning_reg",

@@ -16,8 +16,8 @@ class FeatureEncoder(nn.Module):
         enc_nlayers: int = 3,
         in_curve_dim: int = 1,
         out_curve_dim: int = 16,
-        in_meta_features: Optional[int] = None,
-        out_meta_features: int = 16,
+        in_metafeat_dim: Optional[int] = None,
+        out_metafeat_dim: int = 16,
     ):
         super().__init__()
         if isinstance(in_features, int):
@@ -39,9 +39,9 @@ class FeatureEncoder(nn.Module):
         self.curve_embedder = ConvNet(in_curve_dim, out_curve_dim)
         enc_dims += out_curve_dim
 
-        if in_meta_features is not None:
-            enc_dims += out_meta_features
-            self.fc_meta = nn.Linear(in_meta_features, out_meta_features)
+        if in_metafeat_dim is not None:
+            enc_dims += out_metafeat_dim
+            self.fc_meta = nn.Linear(in_metafeat_dim, out_metafeat_dim)
         else:
             self.fc_meta = None
 

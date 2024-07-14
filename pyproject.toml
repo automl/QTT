@@ -4,7 +4,7 @@ version = "0.0.1"
 dependencies = [
   "torch >= 2.0.0",
   "torchvision >= 0.15.1",
-  "ConfigSpace >= 0.6.0",
+  "ConfigSpace >= 0.6.0, < 1",
   "gpytorch >= 1.9.0",
   "numpy < 2",
   "pandas >= 2.0.0",

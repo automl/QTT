@@ -1,7 +1,8 @@
-from qtt.factory import get_opt
+from qtt.factory import get_optimizer
 from qtt.tuners import QuickTuner
-from qtt.finetune.cv.image_classification import finetune_script
+from qtt.finetune.cv.classification import finetune_script
 
-opt, cm = get_opt("mtlbm/micro")
-qt = QuickTuner(opt, cm, finetune_script)
-qt.fit(data_path="path/to/dataset", time_limit=3600)
+optimizer = get_optimizer("mtlbm/micro")
+qt = QuickTuner(optimizer, finetune_script)
+task_info = {"data_path": "path/to/data"}
+qt.run(task_info=task_info, time_budget=3600)

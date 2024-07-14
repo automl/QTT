@@ -1,44 +1,14 @@
 import logging
 import os
-from dataclasses import dataclass
-from enum import Enum
-
+import pandas as pd
 from torchvision.datasets import ImageFolder
 
 logger = logging.getLogger(__name__)
 
 
-class QTaskStatus(Enum):
-    SUCCESS = 1
-    ERROR = 2
-
-
-@dataclass
-class QTunerResult:
-    idx: int
-    score: float
-    time: float
-    status: QTaskStatus
-    info: str = ""
-
-
-def get_dataset_metafeatures(
+def extract_image_dataset_metadata(
     path: str, train_split: str = "train", val_split: str = "val"
 ):
-    """
-    Get metafeatures of the dataset.
-
-    Parameters
-    ----------
-    path : str
-        Path to the dataset
-
-    Returns
-    -------
-    dict
-        meta-features of the dataset
-    """
-    logger.info("metafeatures not given, infer from dataset")
     assert os.path.exists(path), f"dataset-path: {path} does not exist."
     n_samples = 0
     n_classes = 0
@@ -59,5 +29,13 @@ def get_dataset_metafeatures(
         valset = ImageFolder(val_path)
         n_samples += len(valset)
 
-    meta_features = [n_samples, n_classes, n_features, n_channels]
-    return meta_features
+    df = pd.DataFrame(
+        {
+            "n_samples": [n_samples],
+            "n_classes": [n_classes],
+            "n_features": [n_features],
+            "n_channels": [n_channels],
+        }
+    )
+
+    return df

@@ -1,46 +1,58 @@
+import logging
 import os
+import random
+from datetime import datetime
+from pathlib import Path
+from time import sleep
 
-import pandas as pd
-from ConfigSpace.read_and_write import json as cs_json
+import numpy as np
+import torch
 
-from qtt.configuration import ConfigManager
-from qtt.optimizers.quick import QuickOptimizer
-from qtt.optimizers.surrogates.dyhpo import DyHPO
+logger = logging.getLogger(__name__)
 
 
-def get_opt_from_pretrained(path_or_name: str, num_configs: int = 128):
-    """
-    Load a pretrained optimizer from .
+def setup_outputdir(path, create_dir=True, warn_if_exist=True, path_suffix=None):
+    if path:
+        assert isinstance(
+            path, (str, Path)
+        ), f"Only str and pathlib.Path types are supported for path, got {path} of type {type(path)}."
 
-    Parameters
-    ----------
-    path_or_name : str
-        The path to the pretrained model or the name of the pretrained model.
-    num_configs : int, default = 128
-        The number of candidate configurations to generate.
-
-    Returns
-    -------
-    QuickOptimizer
-    """
-    if path_or_name.startswith("mtlbm/"):
-        _, version = path_or_name.split("/")
-        file_path = os.path.dirname(os.path.abspath(__file__))
-        root = os.path.join(file_path, "..", "pretrained", "mtlbm")
-        config_path = os.path.join(root, "mtlbm.json")
-        meta_data_path = os.path.join(root, version, "meta_info.csv")
-        surrogate_path = os.path.join(root, version)
+    if path_suffix is None:
+        path_suffix = ""
+    if path is None:
+        path = f"qtt{path_suffix}"
     else:
-        assert os.path.exists(path_or_name), f"{path_or_name} does not exist."
-        root = path_or_name
-        config_path = os.path.join(root, "mtlbm.json")
-        meta_data_path = os.path.join(root, "meta_info.csv")
-        surrogate_path = root
+        path = f"{path}{path_suffix}"
 
-    config_space = cs_json.read(open(config_path, "r").read())
-    meta_data = pd.read_csv(meta_data_path, index_col=0)
-    manager = ConfigManager(config_space, meta_data)
-    dyhpo = DyHPO.from_pretrained(surrogate_path)
+    if create_dir:
+        for _ in range(1000):
+            try:
+                now = datetime.now()
+                timestamp = now.strftime("%y%m%d-%H%M%S")
+                _path = os.path.join(path, f"{timestamp}")
+                os.makedirs(_path, exist_ok=False)
+                path = _path
+                break
+            except FileExistsError:
+                sleep(1)
+                continue
+        else:
+            raise RuntimeError("Too many jobs startet at the same time.")
+        logger.log(25, f'No path specified. Models will be saved in: "{path}"')
+    elif warn_if_exist:
+        if os.path.isdir(path):
+            logger.warning(
+                f'Warning: path already exists! This may overwrite previous runs! path="{path}"'
+            )
+    path = os.path.expanduser(path)  # replace ~ with absolute path if it exists
+    return path
 
-    optimizer = QuickOptimizer(dyhpo, manager, num_configs)
-    return optimizer
+
+def fix_random_seeds(seed=42):
+    """
+    Fix random seeds.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)

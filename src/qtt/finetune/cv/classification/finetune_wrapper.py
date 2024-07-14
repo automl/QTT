@@ -7,7 +7,7 @@ from .utils.build_parser import build_parser
 hp_list = [
     "batch_size",
     "bss_reg",
-    "clip_grad_norm",
+    "clip_grad",
     "cotuning_reg",
     "cutmix",
     "delta_reg",
@@ -18,12 +18,17 @@ hp_list = [
     "model",
     "opt",
     "pct_to_freeze",
+    "sched",
     "smoothing",
     "sp_reg",
     "warmup_epochs",
-    "warmup_epochs",
     "warmup_lr",
     "weight_decay",
+]
+
+num_hp_list = [
+    "clip_grad",
+    "layer_decay",
 ]
 
 bool_hp_list = [
@@ -33,8 +38,9 @@ bool_hp_list = [
 ]
 
 cond_hp_list = [
-    "layer_decay",
-    "sched",
+    "decay_rate",
+    "decay_epochs",
+    "patience_epochs"
 ]
 
 static_args = [
@@ -50,30 +56,31 @@ static_args = [
 task_args = [
     "train-split",
     "val-split",
-    "num_classes",
+    "num-classes",
 ]
 
 
 def finetune_script(
-    budget: int,
-    config: dict,
+    job: dict,
     task_info: dict,
 ):
-    config_id = task_info["config_id"]
+    config = job["config"].get_dictionary()
+    config_id = job["config_id"]
+    budget = job["budget"]
     data_path = task_info["data_path"]
-    output_dir = task_info["output_dir"]
-    verbosity = task_info["verbosity"]
-    args = [data_path]
+    output = task_info.get("output-path", "./output")
+    verbosity = task_info.get("verbosity", 2)
 
+    args = [data_path]
     # REGULAR HPS/ARGS
     for hp in hp_list:
         if hp in config:
             args += [f"--{hp}", str(config[hp])]
 
-    # CLIP GRAD NORM
-    clip_grad_norm = config.get("clip_grad", "None")
-    if clip_grad_norm != "None":
-        args += ["--clip_grad", str(clip_grad_norm)]
+    # NUMERICAL ARGS (if the value is not 0)
+    for hp in num_hp_list:
+        value = config.get(hp)
+        args += [f"--{hp}", str(value)]
 
     # BOOLEAN ARGS
     for hp in bool_hp_list:
@@ -83,13 +90,13 @@ def finetune_script(
 
     # CONDITIONAL ARGS
     for hp in cond_hp_list:
-        option = config.get(hp, "None")
-        if option != "None":
+        option = config.get(hp, False)
+        if option:
             args += [f"--{hp}", str(option)]
 
     # DATA AUGMENTATIONS
-    data_augmentation = config.get("data_augmentation", "None")
-    if data_augmentation != "None":
+    data_augmentation = config.get("data_augmentation")
+    if data_augmentation != "no_augment":
         if data_augmentation == "auto_augment":
             vers = config.get("auto_augment")
             args += ["--auto_augment", str(vers)]
@@ -97,8 +104,8 @@ def finetune_script(
             args += [f"--{data_augmentation}"]
 
     # OPTIMIZER BETAS
-    opt_betas = config.get("opt_betas", "None")
-    if opt_betas != "None":
+    opt_betas = config.get("opt_betas")
+    if opt_betas:
         opt_betas = opt_betas.strip("()").split(",")
         args += ["--opt_betas", *opt_betas]
 
@@ -108,11 +115,11 @@ def finetune_script(
 
     args += ["--epochs_step", str(budget)]
     args += ["--experiment", str(config_id)]
-    args += ["--output", output_dir]
+    args += ["--output", output]
 
     # OUTPUT DIRECTORY
-    output_dir = os.path.join(output_dir, str(config_id))
-    resume_path = os.path.join(output_dir, "last.pth.tar")
+    output = os.path.join(output, str(config_id))
+    resume_path = os.path.join(output, "last.pth.tar")
     if os.path.exists(resume_path):
         args += ["--resume", resume_path]
 

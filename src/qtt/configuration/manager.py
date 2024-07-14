@@ -1,100 +1,59 @@
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 from ConfigSpace import Configuration, ConfigurationSpace
 
-NUM_HP = [
-    "bss_reg",
-    "clip_grad",
-    "cotuning_reg",
-    "cutmix",
-    "decay_rate",
-    "delta_reg",
-    "drop",
-    "layer_decay",
-    "lr",
-    "mixup",
-    "mixup_prob",
-    "momentum",
-    "pct_to_freeze",
-    "smoothing",
-    "sp_reg",
-    "warmup_lr",
-    "weight_decay",
-]
+from .utils import get_one_hot_encoding, SORT_MTHDS
 
 
 class ConfigManager:
     def __init__(
         self,
-        space: ConfigurationSpace,
-        meta_data: pd.DataFrame,
+        cs: ConfigurationSpace,
+        std_data: Optional[pd.DataFrame] = None,
+        sort_mthd: str = "alphabet",
     ):
-        self.space = space
-        self.md = meta_data
+        assert sort_mthd in SORT_MTHDS, "Invalid sort option"
+        self.cs = cs
+        self.std_data = std_data
+        self.sort_mthd = sort_mthd
+
+        self.one_hot = get_one_hot_encoding(cs, sort_mthd)
 
     def sample_configuration(self, n: int):
-        """
-        Samples n configurations from the configuration space.
+        return self.cs.sample_configuration(n)
 
-        Args:
-            n (int): The number of configurations to sample.
-
-        Returns:
-            List[Configuration]: A list of sampled configurations.
-        """
-        return self.space.sample_configuration(n)
-
-    def preprocess_configurations(
-        self,
-        configurations: List[Configuration],
-        standardize: bool = True,
-    ):
-        """
-        Preprocesses a list of configurations by encoding categorical and numerical hyperparameters,
-        and optionally standardizing numerical hyperparameters.
-
-        Args:
-            configurations (List[Configuration]): A list of configurations to preprocess.
-            standardize (bool, optional): Whether to standardize numerical hyperparameters. Defaults to False.
-
-        Returns:
-            pd.DataFrame: The preprocessed configurations as a pandas DataFrame.
-        """
-        one_hot_hp = self.md.columns
-
+    def preprocess_configurations(self, configurations: List[Configuration]):
         encoded_configs = []
         for config in configurations:
             enc_config = dict()
-            for hp in one_hot_hp:
+            for hp in self.one_hot:
                 # categorical hyperparameters
                 if len(hp.split(":")) > 1:
                     key, choice = hp.split(":")
                     val = 1 if config.get(key) == choice else 0
                 else:
-                    # numerical hyperparameters
-                    val = config.get(hp, 0)
-                    # boolean hyperparameters
-                    if isinstance(val, bool):
+                    val = config.get(hp, 0) # NUM
+                    if isinstance(val, bool): # BOOL
                         val = int(val)
-                    # not-active (conditional or numerical) hyperparameters
-                    elif val == "None":
-                        val = 0
                 enc_config[hp] = val
             encoded_configs.append(enc_config)
 
         df = pd.DataFrame(encoded_configs)
 
-        # reorder columns to match the order of the metadataset
-        df = df[self.md.columns]
-
         # standardize numerical hyperparameters
-        if standardize:
-            mean = self.md.loc["mean"]
-            std = self.md.loc["std"]
-            df[NUM_HP] = (df[NUM_HP] - mean[NUM_HP]) / std[NUM_HP]
+        if self.std_data is not None:
+            mean = self.std_data.loc["mean"]
+            std = self.std_data.loc["std"]
+            std[std == 0] = 1
+            df = (df - mean) / std
+        
+        # assert order of columns matches one-hot-encoded columns
+        df = df[self.one_hot]
+        return df.to_numpy()
 
-        return df
+    def get_one_hot_encoding(self):
+        return self.one_hot
 
     @staticmethod
     def config_id(config: Configuration) -> str:

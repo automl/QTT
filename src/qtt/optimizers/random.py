@@ -1,25 +1,25 @@
 import logging
 import random
-from collections import defaultdict
-from typing import List, Optional, Tuple
-
+from typing import Optional
 import numpy as np
 import torch
 
-from qtt.utils.log_utils import set_logger_verbosity
+from ..configuration import ConfigManager
+from ..utils import set_logger_verbosity
+from .optimizer import BaseOptimizer
 
 logger = logging.getLogger("RandomOptimizer")
 
 
-class RandomOptimizer:
-    configs: np.ndarray
-    n_iter_no_change: int | None = None
-    tol: float = 0.0
-
+class RandomOptimizer(BaseOptimizer):
     def __init__(
         self,
-        max_budget: int = 50,
+        cm: ConfigManager,
+        num_configs: int = 256,
         fantasize_steps: int = 1,
+        total_budget: int = 50,
+        tol: float = 0.0,
+        n_iter_no_change: Optional[int] = None,
         verbosity: int = 2,
         seed: Optional[int] = None,
     ):
@@ -31,58 +31,42 @@ class RandomOptimizer:
             np.random.seed(seed)
             torch.manual_seed(seed)
 
-        self.max_budget = max_budget
+        self.cm = cm
+        self.num_configs = num_configs
         self.fantasize_steps = fantasize_steps
+        self.total_budget = total_budget
 
-        self.incumbent = -1
-        self.incumbent_score = 0.0
-        self.info_dict = dict()
+        self.tol = tol
+        self.n_iter_no_change = n_iter_no_change
+        if n_iter_no_change is not None:
+            self.score_history = np.zeros(
+                (num_configs, n_iter_no_change), dtype=np.float64
+            )
+
+        self.candidates = self.cm.sample_configuration(num_configs)
+
         self.finished_configs = set()
+        self.evaluated_configs = set()
 
-        self.results: dict[int, List[int]] = defaultdict(list)
-        self.scores: dict[int, List[float]] = defaultdict(list)
-        self.costs: dict[int, List[float]] = defaultdict(list)
+        self.budgets = np.zeros(num_configs, dtype=np.int64)
+        self.scores = np.zeros((num_configs, total_budget), dtype=np.float64)
 
-    def set_configs(self, configs):  # np.ndarray | pd.DataFrame
-        self.configs = configs
-        if self.n_iter_no_change is not None:
-            self.score_history = {
-                i: np.zeros(self.n_iter_no_change) for i in range(len(configs))
-            }
+    def ask(self):
+        indexes = set(range(self.num_configs))
+        remaining = indexes - self.finished_configs
+        index = random.choice(list(remaining))
 
-    def set_metafeatures(self, *args, **kwargs):
-        pass
+        budget = self.budgets[index] + self.fantasize_steps
+        budget = min(budget, self.total_budget)
 
-    def suggest(self) -> Tuple[int, int]:
-        """
-        Suggest the next hyperparameter configuration to evaluate.
+        out = {
+            "budget": budget,
+            "config": self.candidates[index],
+            "config_id": index,
+        }
+        return out
 
-        Returns
-        -------
-        next_config_index: int
-            The index of the best hyperparameter configuration.
-        budget: int
-            The budget of the hyperparameter configuration.
-        """
-        # check if we still have random configurations to evaluate
-        if len(self.finished_configs) == len(self.configs):
-            return -1, -1
-
-        # get the index of the next configuration to evaluate
-        while True:
-            index = random.choice(range(len(self.configs)))
-            if index not in self.finished_configs:
-                break
-
-        # get the budget of the next configuration to evaluate
-        if index in self.results:
-            budget = max(self.results[index]) + self.fantasize_steps
-        else:
-            budget = self.fantasize_steps
-
-        return index, budget
-
-    def observe(self, results: dict | list[dict]):
+    def tell(self, results: dict | list[dict]):
         if isinstance(results, dict):
             results = [results]
 
@@ -91,27 +75,21 @@ class RandomOptimizer:
             budget = result["budget"]
             config_id = result["config_id"]
             status = result["status"]
-            cost = result["cost"]
 
             if not status:
                 self.finished_configs.add(config_id)
 
             else:
-                if config_id in self.results:
-                    self.results[config_id].append(budget)
-                    self.scores[config_id].append(score)
-                    self.costs[config_id].append(cost)
-                else:
-                    self.results[config_id] = [budget]
-                    self.scores[config_id] = [score]
-                    self.costs[config_id] = [cost]
+                self.evaluated_configs.add(config_id)
+                self.scores[config_id][budget] = score
+                self.budgets[config_id] = budget
 
-            if score >= 1.0 or budget >= self.max_budget:
+            if score >= 1.0 or budget >= self.total_budget:
                 self.finished_configs.add(config_id)
 
-            if self.incumbent_score < score:
-                self.incumbent = config_id
-                self.incumbent_score = score
+            if self.inc_score < score:
+                self.inc_config = config_id
+                self.inc_score = score
 
             if self.n_iter_no_change is not None:
                 n_last_iter = self.score_history[config_id]
@@ -121,3 +99,6 @@ class RandomOptimizer:
                     self.score_history[config_id], 1
                 )
                 self.score_history[config_id][0] = score
+
+    def finished(self):
+        return len(self.finished_configs) == self.num_configs
