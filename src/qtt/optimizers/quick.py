@@ -29,7 +29,7 @@ class QuickOptimizer(BaseOptimizer):
         acq_fn: str = "ei",
         explore_factor: float = 0.0,
         tol: float = 0.0,
-        n_iter_no_change: Optional[int] = None,
+        n_iter_no_change: Optional[int] = 3,
         surrogate_kwargs: Optional[Dict[str, Any]] = None,
         device: Optional[str] = None,
         seed: Optional[int] = None,
