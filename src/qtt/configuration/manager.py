@@ -26,6 +26,7 @@ class ConfigManager:
     def preprocess_configurations(self, configurations: List[Configuration]):
         encoded_configs = []
         for config in configurations:
+            config = dict(config)
             enc_config = dict()
             for hp in self.one_hot:
                 # categorical hyperparameters
@@ -65,4 +66,4 @@ class ConfigManager:
         Returns:
             str: The unique identifier for the configuration object.
         """
-        return str(hash(frozenset(config.get_dictionary().items())))
+        return str(hash(frozenset(dict(config).items())))

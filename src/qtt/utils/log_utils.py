@@ -62,12 +62,13 @@ def setup_default_logging(
     fmt: Optional[str] = None,
     datefmt: Optional[str] = None,
 ):
-    sh = logging.StreamHandler()
     if fmt is None:
         fmt = "%(asctime)s - %(name)16s: [%(levelname)s] %(message)s"
     if datefmt is None:
         datefmt = "%y.%m.%d %H:%M:%S"
-    formatter = logging.Formatter(fmt, datefmt)
-    sh.setFormatter(formatter)
-    logging.root.addHandler(sh)
-    logging.root.setLevel(default_level)
+    logging.basicConfig(format=fmt, datefmt=datefmt, level=default_level)
+    # formatter = logging.Formatter(fmt, datefmt)
+    # sh = logging.StreamHandler()
+    # sh.setFormatter(formatter)
+    # logging.root.addHandler(sh)
+    # logging.root.setLevel(default_level)

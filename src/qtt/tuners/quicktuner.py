@@ -142,7 +142,7 @@ class QuickTuner:
         fevals: Optional[int] = None,
         time_budget: Optional[float] = None,
     ):
-        logger.info("Starting QuickTuner fit.")
+        logger.info("Starting QuickTuner Run...")
         logger.info(f"QuickTuneTool will save results to {self.output_path}")
 
         self.start = time.time()
@@ -151,15 +151,17 @@ class QuickTuner:
             self.optimizer.ante()
             # ask for a new configuration
             job_info = self.optimizer.ask()
-
             _task_info = self._add_task_info(task_info)
+
+            self._log_job_submission(job_info)
             result = self.f(job_info, task_info=_task_info)
 
             self._log_result(job_info, result)
             self.optimizer.tell(result)
-            #
+
             self.optimizer.post()
             if self._tune_budget_exhausted(fevals, time_budget):
+                logger.info("Budget exhausted. Stopping run...")
                 break
 
         self._log_end()
@@ -171,6 +173,11 @@ class QuickTuner:
             np.array(self.runtime),
             np.array(self.history, dtype=object),
         )
+
+    def _update_trackers(self, traj, runtime, history):
+        self.traj.append(traj)
+        self.runtime.append(runtime)
+        self.history.append(history)
 
     def _log_result(self, job_info, results):
         if isinstance(results, dict):
@@ -186,13 +193,26 @@ class QuickTuner:
                 self.inc_score = score
                 self.inc_cost = cost
                 self.inc_id = config_id
-                self.inc_config = job_info["config"].get_dictionary()
+                self.inc_config = dict(job_info["config"])
+                inc_changed = True
+
+        self._update_trackers(
+            self.inc_score,
+            cost,
+            (
+                config_id,
+                dict(job_info["config"]),
+                score,
+                cost,
+                result.get("info", {}),
+            ),
+        )
 
         if self.save_freq == "step" or (self.save_freq == "incumbent" and inc_changed):
             self.save()
-    
+
     def _log_end(self):
-        logger.info("Tuning complete.")
+        logger.info("Run complete!")
         logger.info(f"Best score: {self.inc_score}")
         logger.info(f"Best cost: {self.inc_cost}")
         logger.info(f"Best config ID: {self.inc_id}")
@@ -204,7 +224,7 @@ class QuickTuner:
                 setattr(self, key, value)
             else:
                 logger.warning(f"Unknown argument: {key}")
-    
+
     def _add_task_info(self, task_info: dict):
         _task_info = task_info.copy()
         _task_info["output-path"] = self.output_path

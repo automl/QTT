@@ -128,12 +128,12 @@ def main(args: Namespace):
     args.prefetcher = not args.no_prefetcher
     device = utils.init_distributed_device(args)
     if args.distributed:
-        logger.info(
+        logger.log(25,
             "Training in distributed mode with multiple processes, 1 device per process."
             f"Process {args.rank}, total {args.world_size}, device {args.device}."
         )
     else:
-        logger.info(f"Training with a single process on 1 device ({args.device}).")
+        logger.log(25, f"Training with a single process on 1 device ({args.device}).")
     assert args.rank >= 0
 
     if utils.is_primary(args) and args.log_wandb:
@@ -367,16 +367,16 @@ def main(args: Namespace):
         model, optimizer = amp.initialize(model, optimizer, opt_level="O1")
         loss_scaler = ApexScaler()
         if utils.is_primary(args):
-            logger.info("Using NVIDIA APEX AMP. Training in mixed precision.")
+            logger.log(25, "Using NVIDIA APEX AMP. Training in mixed precision.")
     elif use_amp == "native":
         amp_autocast = partial(torch.autocast, device_type=device.type, dtype=amp_dtype)
         if device.type == "cuda":
             loss_scaler = NativeScaler()
         if utils.is_primary(args):
-            logger.info("Using native Torch AMP. Training in mixed precision.")
+            logger.log(25, "Using native Torch AMP. Training in mixed precision.")
     else:
         if utils.is_primary(args):
-            logger.info("AMP not enabled. Training in float32.")
+            logger.log(25, "AMP not enabled. Training in float32.")
 
     # optionally resume from a checkpoint
     resume_epoch = None
@@ -406,11 +406,11 @@ def main(args: Namespace):
         if has_apex and use_amp == "apex":
             # Apex DDP preferred unless native amp is activated
             if utils.is_primary(args):
-                logger.info("Using NVIDIA APEX DistributedDataParallel.")
+                logger.log(25, "Using NVIDIA APEX DistributedDataParallel.")
             model = ApexDDP(model, delay_allreduce=True)
         else:
             if utils.is_primary(args):
-                logger.info("Using native Torch DistributedDataParallel.")
+                logger.log(25, "Using native Torch DistributedDataParallel.")
             model = NativeDDP(
                 model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb
             )
@@ -641,35 +641,7 @@ def main(args: Namespace):
         else:
             lr_scheduler.step(start_epoch)
 
-    # if args.initial_test:
-    #     eval_metrics = validate(
-    #         model,
-    #         loader_eval,
-    #         validate_loss_fn,
-    #         args,
-    #         amp_autocast=amp_autocast,  # type: ignore
-    #         return_features=return_features,
-    #         return_source_output=return_source_output,
-    #     )
-    # else:
-    #     eval_metrics = {"loss": -1, "top1": -1, "top5": -1}
-
-    # if utils.is_primary(args):
-    #     logger.info(
-    #         f'Scheduled epochs: {num_epochs}. LR stepped per {"epoch" if lr_scheduler.t_in_epochs else "update"}.'
-    #     )
-
-    #     initial_general_log = {
-    #         "initial_eval_loss": eval_metrics["loss"],
-    #         "initial_eval_top1": eval_metrics["top1"],
-    #         "initial_eval_top5": eval_metrics["top5"],
-    #         "device_count": device_count,
-    #     }
-
-    #     with open(os.path.join(output_dir, "initial_general_log.yml"), "w") as f:
-    #         yaml.dump(initial_general_log, f, default_flow_style=False)
     out = OrderedDict()
-
     try:
         for epoch in range(start_epoch, num_epochs):
             if args.epochs_step != -1 and epoch == args.epochs_step:
@@ -714,7 +686,7 @@ def main(args: Namespace):
 
             if args.distributed and args.dist_bn in ("broadcast", "reduce"):
                 if utils.is_primary(args):
-                    logger.info("Distributing BatchNorm running means and vars")
+                    logger.log(25, "Distributing BatchNorm running means and vars")
                 utils.distribute_bn(model, args.world_size, args.dist_bn == "reduce")
 
             eval_metrics = validate(
@@ -782,8 +754,9 @@ def main(args: Namespace):
     except KeyboardInterrupt:
         raise KeyboardInterrupt
 
-    if best_metric is not None:
-        logger.info("*** Best metric: {0} (epoch {1})".format(best_metric, best_epoch))
+    # if best_metric is not None and best_epoch is not None:
+    #     _epoch = best_epoch + 1
+    #     logger.info("*** Epoch: {1} - Accuracy: {0} ***".format(_epoch, best_metric))
 
     return out
 
@@ -831,7 +804,6 @@ def train_one_epoch(
     num_updates = epoch * num_batches_per_epoch
 
     for batch_idx, (input, target) in enumerate(loader):
-
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
         if not args.prefetcher:
@@ -1082,12 +1054,3 @@ def validate(
     )
 
     return metrics
-
-
-if __name__ == "__main__":
-    from .utils.build_parser import build_parser
-
-    parser = build_parser()
-    args = parser.parse_args()
-
-    main(args)

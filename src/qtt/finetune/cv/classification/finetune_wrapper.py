@@ -64,7 +64,7 @@ def finetune_script(
     job: dict,
     task_info: dict,
 ):
-    config = job["config"].get_dictionary()
+    config = dict(job["config"])
     config_id = job["config_id"]
     budget = job["budget"]
     data_path = task_info["data_path"]

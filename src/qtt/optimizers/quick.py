@@ -28,8 +28,8 @@ class QuickOptimizer(BaseOptimizer):
         total_budget: int = 50,
         acq_fn: str = "ei",
         explore_factor: float = 0.0,
-        tol: float = 0.0,
-        n_iter_no_change: Optional[int] = 3,
+        tol: float = 0.01,
+        n_iter_no_change: Optional[int] = 1,
         surrogate_kwargs: Optional[Dict[str, Any]] = None,
         device: Optional[str] = None,
         seed: Optional[int] = None,
@@ -55,7 +55,7 @@ class QuickOptimizer(BaseOptimizer):
             self.metafeatures = torch.tensor(metafeatures, dtype=torch.float)
 
         self.init_conf_idx = 0
-        self.init_conf_nr = 5
+        self.init_conf_nr = 3
         self.init_conf_count = 0
         self.eval_count = 0
         self.init_nr = 100
