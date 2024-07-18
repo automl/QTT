@@ -122,19 +122,25 @@ logger = logging.getLogger("finetune")
 def main(args: Namespace):
     verbosity = args.verbosity if hasattr(args, "verbosity") else 1
     set_logger_verbosity(verbosity, logger)
+
     if torch.cuda.is_available():
         cuda.matmul.allow_tf32 = True
         cudnn.benchmark = True
     args.prefetcher = not args.no_prefetcher
     device = utils.init_distributed_device(args)
     if args.distributed:
-        logger.log(25,
+        logger.debug(
             "Training in distributed mode with multiple processes, 1 device per process."
             f"Process {args.rank}, total {args.world_size}, device {args.device}."
         )
     else:
-        logger.log(25, f"Training with a single process on 1 device ({args.device}).")
+        logger.debug( f"Training with a single process on 1 device ({args.device}).")
     assert args.rank >= 0
+
+    if utils.is_primary(args):
+        logger.info("Start finetuning...")
+        args_str = [f"{k}: {v}" for k,v in dict(vars(args)).items()]
+        logger.debug(f"Args: {args_str}")
 
     if utils.is_primary(args) and args.log_wandb:
         if has_wandb:
@@ -282,7 +288,7 @@ def main(args: Namespace):
         else:
             model = convert_sync_batchnorm(model)
         if utils.is_primary(args):
-            logger.info(
+            logger.debug(
                 "Converted model to use Synchronized BatchNorm. WARNING: You may have issues if using "
                 "zero initialized BN layers (enabled by default for ResNets) while sync-bn enabled."
             )
@@ -308,7 +314,7 @@ def main(args: Namespace):
             batch_ratio = batch_ratio**0.5
         args.lr = args.lr_base * batch_ratio
         if utils.is_primary(args):
-            logger.info(
+            logger.debug(
                 f"Learning rate ({args.lr}) calculated from base learning rate ({args.lr_base}) "
                 f"and global batch size ({global_batch_size}) with {args.lr_base_scale} scaling."
             )
@@ -367,16 +373,16 @@ def main(args: Namespace):
         model, optimizer = amp.initialize(model, optimizer, opt_level="O1")
         loss_scaler = ApexScaler()
         if utils.is_primary(args):
-            logger.log(25, "Using NVIDIA APEX AMP. Training in mixed precision.")
+            logger.debug( "Using NVIDIA APEX AMP. Training in mixed precision.")
     elif use_amp == "native":
         amp_autocast = partial(torch.autocast, device_type=device.type, dtype=amp_dtype)
         if device.type == "cuda":
             loss_scaler = NativeScaler()
         if utils.is_primary(args):
-            logger.log(25, "Using native Torch AMP. Training in mixed precision.")
+            logger.debug( "Using native Torch AMP. Training in mixed precision.")
     else:
         if utils.is_primary(args):
-            logger.log(25, "AMP not enabled. Training in float32.")
+            logger.debug( "AMP not enabled. Training in float32.")
 
     # optionally resume from a checkpoint
     resume_epoch = None
@@ -406,11 +412,11 @@ def main(args: Namespace):
         if has_apex and use_amp == "apex":
             # Apex DDP preferred unless native amp is activated
             if utils.is_primary(args):
-                logger.log(25, "Using NVIDIA APEX DistributedDataParallel.")
+                logger.debug( "Using NVIDIA APEX DistributedDataParallel.")
             model = ApexDDP(model, delay_allreduce=True)
         else:
             if utils.is_primary(args):
-                logger.log(25, "Using native Torch DistributedDataParallel.")
+                logger.debug( "Using native Torch DistributedDataParallel.")
             model = NativeDDP(
                 model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb
             )
@@ -686,7 +692,7 @@ def main(args: Namespace):
 
             if args.distributed and args.dist_bn in ("broadcast", "reduce"):
                 if utils.is_primary(args):
-                    logger.log(25, "Distributing BatchNorm running means and vars")
+                    logger.debug( "Distributing BatchNorm running means and vars")
                 utils.distribute_bn(model, args.world_size, args.dist_bn == "reduce")
 
             eval_metrics = validate(
@@ -754,9 +760,14 @@ def main(args: Namespace):
     except KeyboardInterrupt:
         raise KeyboardInterrupt
 
-    # if best_metric is not None and best_epoch is not None:
-    #     _epoch = best_epoch + 1
-    #     logger.info("*** Epoch: {1} - Accuracy: {0} ***".format(_epoch, best_metric))
+    if utils.is_primary(args):
+        log_str = ["Train-Stats:"]
+        log_str += [f"{k}={v:.2f}" for k, v in train_metrics.items()]
+        logger.info(" ".join(log_str))
+        log_str = ["Eval-Stats:"]
+        log_str += [f"{k}={v:.2f}" for k, v in eval_metrics.items()]
+        logger.info(" ".join(log_str))
+        logger.info("Finish finetuning...")
 
     return out
 

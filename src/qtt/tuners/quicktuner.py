@@ -57,6 +57,7 @@ class QuickTuner:
         self.inc_score = 0.0
         self.inc_config = {}
         self.inc_cost = 0.0
+        self.inc_fidelity = -1
         self.inc_id = -1
         self.traj = []
         self.history = []
@@ -77,11 +78,15 @@ class QuickTuner:
     def _tune_budget_exhausted(self, fevals=None, time_budget=None):
         """Checks if the run should be terminated or continued."""
         if fevals is not None:
-            if len(self.traj) >= fevals:
+            evals_left = fevals - len(self.traj)
+            if evals_left <= 0:
                 return True
+            logger.info(f"Evaluations left: {evals_left}")
         if time_budget is not None:
-            if time.time() - self.start >= time_budget:
+            time_left = time_budget - (time.time() - self.start)
+            if time_left <= 0:
                 return True
+            logger.info(f"Time left: {time_left:.2f}s")
         if self.optimizer.finished():
             return True
         return False
@@ -104,10 +109,10 @@ class QuickTuner:
         if not self.history:
             return
         try:
-            history_path = os.path.join(self.output_path, "history.parquet.gzip")
+            history_path = os.path.join(self.output_path, "history.csv")
             history_df = pd.DataFrame(
                 self.history,
-                columns=["config_id", "config", "fitness", "cost", "fidelity", "info"],
+                columns=["config_id", "config", "score", "cost", "fidelity", "info"],
             )
             # Check if the 'info' column is empty or contains only None values
             if (
@@ -117,7 +122,7 @@ class QuickTuner:
             ):
                 # Drop the 'info' column
                 history_df = history_df.drop(columns=["info"])
-            history_df.to_parquet(history_path, compression="gzip")
+            history_df.to_csv(history_path)
         except Exception as e:
             logger.warning(f"History not saved: {e!r}")
 
@@ -128,7 +133,7 @@ class QuickTuner:
             "Evaluating configuration {} with budget {}".format(config_id, budget),
         )
         logger.info(
-            f"Best score seen/Incumbent score: {self.inc_score}",
+            f"Incumbent score: {self.inc_score}",
         )
 
     def save(self):
@@ -188,22 +193,30 @@ class QuickTuner:
             config_id = job_info["config_id"]
             score = result["score"]
             cost = result["cost"]
+            fidelity = result["budget"]
+            config = dict(job_info["config"])
+
+            logger.info(
+                f"*** CONFIG: {config_id} - SCORE: {score} - BUDGET: {fidelity} - TIME-TAKEN {cost:.2f} ***",
+            )
 
             if self.inc_score < score:
                 self.inc_score = score
                 self.inc_cost = cost
+                self.inc_fidelity = fidelity
                 self.inc_id = config_id
-                self.inc_config = dict(job_info["config"])
+                self.inc_config = config
                 inc_changed = True
 
         self._update_trackers(
             self.inc_score,
-            cost,
+            time.time() - self.start,
             (
                 config_id,
-                dict(job_info["config"]),
+                config,
                 score,
                 cost,
+                fidelity,
                 result.get("info", {}),
             ),
         )
@@ -231,4 +244,10 @@ class QuickTuner:
         return _task_info
 
     def get_incumbent(self):
-        return self.inc_config, self.inc_score, self.inc_cost, self.inc_id
+        return (
+            self.inc_id,
+            self.inc_config,
+            self.inc_score,
+            self.inc_fidelity,
+            self.inc_cost,
+        )

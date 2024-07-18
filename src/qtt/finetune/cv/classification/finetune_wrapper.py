@@ -3,7 +3,6 @@ import os
 from . import finetune
 from .utils.build_parser import build_parser
 
-
 hp_list = [
     "batch_size",
     "bss_reg",
@@ -37,11 +36,7 @@ bool_hp_list = [
     "stoch_norm",
 ]
 
-cond_hp_list = [
-    "decay_rate",
-    "decay_epochs",
-    "patience_epochs"
-]
+cond_hp_list = ["decay_rate", "decay_epochs", "patience_epochs"]
 
 static_args = [
     "--pretrained",
@@ -156,4 +151,5 @@ def finetune_script(
             status=True,
         )
         out.append(result)
+
     return out

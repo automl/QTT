@@ -28,7 +28,7 @@ class QuickOptimizer(BaseOptimizer):
         total_budget: int = 50,
         acq_fn: str = "ei",
         explore_factor: float = 0.0,
-        tol: float = 0.01,
+        tol: float = 0.0,
         n_iter_no_change: Optional[int] = 1,
         surrogate_kwargs: Optional[Dict[str, Any]] = None,
         device: Optional[str] = None,
@@ -318,10 +318,6 @@ class QuickOptimizer(BaseOptimizer):
                 self.inc_score = score
 
             if self.n_iter_no_change is not None:
-                n_last_iter = self.score_history[config_id]
-                if not np.any(score + self.tol > n_last_iter):
+                if not np.any(self.score_history[config_id] < (score - self.tol)):
                     self.finished_configs.add(config_id)
-                self.score_history[config_id] = np.roll(
-                    self.score_history[config_id], 1
-                )
-                self.score_history[config_id][0] = score
+                self.score_history[config_id][budget % self.n_iter_no_change] = score

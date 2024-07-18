@@ -12,15 +12,19 @@ class ConfigManager:
         cs: ConfigurationSpace,
         std_data: Optional[pd.DataFrame] = None,
         sort_mthd: str = "alphabet",
+        target_cs: ConfigurationSpace | None = None,
     ):
         assert sort_mthd in SORT_MTHDS, "Invalid sort option"
         self.cs = cs
         self.std_data = std_data
         self.sort_mthd = sort_mthd
+        self.target_cs = target_cs
 
         self.one_hot = get_one_hot_encoding(cs, sort_mthd)
 
     def sample_configuration(self, n: int):
+        if self.target_cs is not None:
+            return self.target_cs.sample_configuration(n)
         return self.cs.sample_configuration(n)
 
     def preprocess_configurations(self, configurations: List[Configuration]):
