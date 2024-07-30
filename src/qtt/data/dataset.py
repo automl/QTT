@@ -4,7 +4,7 @@ from ConfigSpace import ConfigurationSpace
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
-from ..configuration.utils import get_one_hot_encoding, SORT_MTHDS
+from ..config.utils import one_hot_encode_config_space, SORT_MTHDS
 
 
 class MetaDataset(Dataset):
@@ -14,18 +14,14 @@ class MetaDataset(Dataset):
         self,
         root: str,
         cs: ConfigurationSpace,
-        cost_aware: bool = False,
-        include_metafeat: bool = False,
         standardize: bool = True,
-        sort_mthd: str = "alphabet",
+        sort_mthd: str = "auto",
         to_tensor: bool = True,
     ):
         super().__init__()
         assert sort_mthd in SORT_MTHDS, "Invalid sort option"
         self.root = root
         self.cs = cs
-        cost_aware = cost_aware
-        self.include_metafeat = include_metafeat
         self.standardize = standardize
         self.sort_mthd = sort_mthd
         self.to_tensor = to_tensor
@@ -34,14 +30,8 @@ class MetaDataset(Dataset):
         self.scores = pd.read_csv(os.path.join(self.root, "score.csv"), index_col=0)
         self.scores.fillna(0, inplace=True)
 
-        self.cost = None
-        if cost_aware:
-            _path = os.path.join(self.root, "cost.csv")
-            self.cost = pd.read_csv(_path, index_col=0)
-        self.metafeat = None
-        if include_metafeat:
-            _path = os.path.join(self.root, "meta.csv")
-            self.metafeat = pd.read_csv(_path, index_col=0)
+        self.cost = pd.read_csv(os.path.join(self.root, "cost.csv"), index_col=0)
+        self.metafeat = pd.read_csv(os.path.join(self.root, "meta.csv"), index_col=0)
 
         self._preprocess_configs()
         self._preprocess_metafeat()
@@ -49,7 +39,7 @@ class MetaDataset(Dataset):
     def _preprocess_configs(self):
         NUM = self.configs.select_dtypes(include=["number"]).columns.tolist()
 
-        df = pd.get_dummies(self.configs, prefix_sep=":", dtype=int)
+        df = pd.get_dummies(self.configs, prefix_sep="=", dtype=int)
         df.fillna(0, inplace=True)
         NON_NUM = [col for col in df.columns if col not in NUM]
 
@@ -64,7 +54,7 @@ class MetaDataset(Dataset):
             self.config_norm = pd.DataFrame([mean, std], index=["mean", "std"])
 
         if self.sort_mthd:
-            one_hot = get_one_hot_encoding(self.cs, self.sort_mthd)
+            one_hot, _ = one_hot_encode_config_space(self.cs, self.sort_mthd)
             df = df[one_hot]
 
         self.configs = df.astype(float)
@@ -88,24 +78,21 @@ class MetaDataset(Dataset):
     def __getitem__(self, idx):
         config = self.configs.iloc[idx].values
         score = self.scores.iloc[idx].values
-        metafeat = None
-        if self.metafeat is not None:
-            metafeat = self.metafeat.iloc[idx].values
-        cost = None
-        if self.cost is not None:
-            cost = self.cost.iloc[idx].values
+        metafeat = self.metafeat.iloc[idx].values
+        cost = self.cost.iloc[idx].values
 
         if self.to_tensor:
             config = torch.tensor(config, dtype=torch.float)
             score = torch.tensor(score, dtype=torch.float)
-            if self.metafeat is not None:
-                metafeat = torch.tensor(metafeat, dtype=torch.float)
-            if cost is not None:
-                cost = torch.tensor(cost, dtype=torch.float)
+            metafeat = torch.tensor(metafeat, dtype=torch.float)
+            cost = torch.tensor(cost, dtype=torch.float)
 
-        return config, score, metafeat, cost
+        return {"config": config, "score": score, "metafeat": metafeat, "cost": cost}
 
     def get_config_norm(self):
+        """
+        
+        """
         return self.config_norm
     
     def get_metafeat_norm(self):
@@ -127,18 +114,18 @@ class MetaDataset(Dataset):
             return []
         return self.metafeat.columns.tolist()
 
-    def get_dataset_info(self):
-        info = {}
-        info["num-samples"] = len(self.configs)
-        info["config-dim"] = self.get_config_dim()
-        info["config-order"] = self.get_config_order()
-        if self.metafeat is not None:
-            info["metafeat-dim"] = self.get_metafeat_dim()
-            info["metafeat-order"] = self.get_metafeat_order()
-        return info
+    # def get_dataset_info(self):
+    #     info = {}
+    #     info["num-samples"] = len(self.configs)
+    #     info["config-dim"] = self.get_config_dim()
+    #     info["config-order"] = self.get_config_order()
+    #     if self.metafeat is not None:
+    #         info["metafeat-dim"] = self.get_metafeat_dim()
+    #         info["metafeat-order"] = self.get_metafeat_order()
+    #     return info
 
-    def save_norm_to_file(self, path="./"):
-        if self.metafeat_norm is not None:
-            self.metafeat_norm.to_csv(os.path.join(path, "metafeat_norm.csv"))
-        if self.config_norm is not None:
-            self.config_norm.to_csv(os.path.join(path, "config_norm.csv"))
+    # def save_norm_to_file(self, path="./"):
+    #     if self.metafeat_norm is not None:
+    #         self.metafeat_norm.to_csv(os.path.join(path, "metafeat_norm.csv"))
+    #     if self.config_norm is not None:
+    #         self.config_norm.to_csv(os.path.join(path, "config_norm.csv"))

@@ -3,8 +3,8 @@ import json
 from ConfigSpace.read_and_write import json as cs_json
 import torch
 from qtt.data.dataset import MetaDataset
-from qtt.optimizers.surrogates import DyHPO, CostEstimator
-from qtt.tools.metatrain import metatrain_dyhpo, metatrain_cost_estimator
+from qtt.optimizers.surrogates import DyHPO, CostPredictor
+from qtt.tools.metatrain import metatrain_perf_predictor, metatrain_cost_predictor
 
 # load data
 cs_path = "path/to/space.json"
@@ -26,10 +26,10 @@ json.dump(config, open("config.json", "w"))
 
 # create, train and save DyHPO
 dyhpo = DyHPO(**config)
-dyhpo = metatrain_dyhpo(dyhpo, dataset)
+dyhpo = metatrain_perf_predictor(dyhpo, dataset)
 torch.save(dyhpo.state_dict(), "dyhpo.pth")
 
 # create, train and save cost estimator
-cost_estimator = CostEstimator(**config)
-cost_estimator = metatrain_cost_estimator(cost_estimator, dataset)
+cost_estimator = CostPredictor(**config)
+cost_estimator = metatrain_cost_predictor(cost_estimator, dataset)
 torch.save(cost_estimator.state_dict(), "estimator.pth")

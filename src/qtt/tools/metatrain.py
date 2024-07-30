@@ -8,7 +8,16 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset, random_split
 
 from qtt.data.dataset import MetaDataset
-from qtt.optimizers.surrogates.dyhpo import DyHPO
+
+
+def dict_collate_fn(batch):
+    """Collate function for DataLoader."""
+    return {k: torch.stack([d[k] for d in batch]) for k in batch[0].keys()}
+
+
+def dict_to_device(data, device):
+    """Move dictionary to device."""
+    return {k: v.to(device) for k, v in data.items()}
 
 
 class IterationWrapper:
@@ -50,14 +59,14 @@ def process_curve(curve):
     return curve, budget, target
 
 
-def metatrain_dyhpo(
-    dyhpo: DyHPO,
+def metatrain_perf_predictor(
+    model: torch.nn.Module,
     dataset: Dataset,
     batch_size: int = 64,
     lr: float = 1e-3,
     train_iter: int = 10000,
     val_freq: int = 100,
-    val_iter: int = 10,
+    val_iter: int = 100,
     test_size: float = 0.2,
     use_scheduler: bool = True,
     device: str = "auto",
@@ -74,7 +83,7 @@ def metatrain_dyhpo(
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(device)
-    dyhpo.to(dev)
+    model.to(dev)
 
     # ============ preparing data ... ============
     generator = torch.Generator().manual_seed(seed) if seed is not None else None
@@ -88,14 +97,16 @@ def metatrain_dyhpo(
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
+        collate_fn=dict_collate_fn,
     )
     val_loader = DataLoader(
         dataset=valset,
         batch_size=batch_size,
+        collate_fn=dict_collate_fn,
     )
 
     # ============ preparing optimizer ... ============
-    optimizer = torch.optim.Adam(dyhpo.parameters(), lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr)
     scheduler = None
     if use_scheduler:
         scheduler = CosineAnnealingLR(optimizer, train_iter, eta_min=1e-7)
@@ -103,23 +114,23 @@ def metatrain_dyhpo(
     # ============ training ... ============
     min_loss = float("inf")
     loss_history = deque(maxlen=20)
-    dyhpo.train()
+    model.train()
     start_time = time.time()
     for it, batch in enumerate(IterationWrapper(train_loader, train_iter)):
         it += 1
 
-        batch = [item.to(dev) for item in batch]
-        config, score, metafeat, _ = batch
+        batch = dict_to_device(batch, dev)
+        config, score, metafeat = batch["config"], batch["score"], batch["metafeat"]
 
         curve, budget, target = process_curve(score)
 
         train_x = {
             "config": config,
-            "metafeat": metafeat,
             "budget": budget,
             "curve": curve,
+            "metafeat": metafeat,
         }
-        loss = dyhpo.train_step(train_x, target)
+        loss = model.train_step(train_x, target)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -134,18 +145,19 @@ def metatrain_dyhpo(
             print(
                 f"TRAIN  [{it:}/{train_iter}]:",
                 f"loss: {_loss:.3f}",
-                f"lenghtscale: {dyhpo.gp_model.covar_module.base_kernel.lengthscale.item():.3f}",
-                f"noise: {dyhpo.gp_model.likelihood.noise.item():.3f}",  # type: ignore
+                f"lenghtscale: {model.gp_model.covar_module.base_kernel.lengthscale.item():.3f}",
+                f"noise: {model.gp_model.likelihood.noise.item():.3f}",  # type: ignore
                 f"eta: {eta:.2f}s",
                 sep="  ",
             )
 
+        # validation
         if not it % val_freq:
-            dyhpo.eval()
+            model.eval()
             val_loss = []
             for batch in IterationWrapper(val_loader, val_iter):
-                batch = [item.to(dev) for item in batch]
-                config, score, metafeat, _ = batch
+                batch = dict_to_device(batch, dev)
+                config, score, metafeat = batch["config"], batch["score"], batch["metafeat"]
                 curve, budget, target = process_curve(score)
                 batch = {
                     "config": config,
@@ -153,33 +165,31 @@ def metatrain_dyhpo(
                     "budget": budget,
                     "curve": curve,
                 }
-                pred = dyhpo.predict(batch)
-                mean = pred.mean
-                loss = torch.nn.functional.l1_loss(mean, target)
+                pred = model.predict(batch)
+                loss = torch.nn.functional.l1_loss(pred.mean, target)
                 val_loss.append(loss.item())
 
             val_error = sum(val_loss) / len(val_loss)
             if val_error < min_loss:
                 min_loss = val_error
-                torch.save(dyhpo.state_dict(), save_path)
+                torch.save(model.state_dict(), save_path)
                 print(f"VAL  [{it}]: Checkpoint saved with val-error: {val_error:.3f}")
             else:
                 print(f"VAL  [{it}]: val-error: {val_error:.3f}")
-            dyhpo.train()
+            model.train()
 
     # Load the model with the best validation error
     print(f"Loading the model with the best validation error: {min_loss:.3f}")
-    dyhpo.load_state_dict(torch.load(os.path.join(cache_dir, ckpt_name)))
+    model.load_state_dict(torch.load(os.path.join(cache_dir, ckpt_name)))
 
-    return dyhpo
+    return model
 
 
-def metatrain_cost_estimator(
+def metatrain_cost_predictor(
     model: torch.nn.Module,
     dataset: MetaDataset,
     batch_size: int = 128,
     lr: float = 1e-3,
-    grad_clip: float = 0.0,
     train_iter: int = 10000,
     val_freq: int = 100,
     test_size: float = 0.3,

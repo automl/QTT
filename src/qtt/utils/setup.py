@@ -37,7 +37,7 @@ def setup_outputdir(path, create_dir=True, warn_if_exist=True, path_suffix=None)
                 sleep(1)
                 continue
         else:
-            raise RuntimeError("Too many jobs startet at the same time.")
+            raise RuntimeError("Too many jobs started at the same time.")
         logger.log(25, f'No path specified. Models will be saved in: "{path}"')
     elif warn_if_exist:
         if os.path.isdir(path):

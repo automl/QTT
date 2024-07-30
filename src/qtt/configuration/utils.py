@@ -12,6 +12,7 @@ NUMERICAL = (
 SORT_MTHDS = [
     "auto",
     "alphabet",
+    "group",
 ]
 
 
