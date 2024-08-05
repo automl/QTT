@@ -2,6 +2,8 @@ import copy
 import json
 import logging
 import os
+import time
+from collections import deque
 
 import torch
 import torch.nn as nn
@@ -15,11 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 class CostPredictor(Predictor):
-    train_steps = 1000
-    train_lr = 1e-3
-    refine_steps = 50
-    refine_lr = 1e-3
-
     def __init__(
         self,
         in_dim: int | list[int],
@@ -43,10 +40,10 @@ class CostPredictor(Predictor):
         enc_dims = len(in_dim) * enc_out_dim
 
         if in_metafeat_dim is not None:
-            self.fc_meta = MLP(in_metafeat_dim, out_metafeat_dim)
+            self.meta_encoder = MLP(in_metafeat_dim, out_metafeat_dim)
             enc_dims += out_metafeat_dim
         else:
-            self.fc_meta = None
+            self.meta_encoder = None
 
         self.head = MLP(enc_dims, 1, enc_nlayers, enc_hidden_dim, act_fn=nn.GELU)
 
@@ -69,12 +66,12 @@ class CostPredictor(Predictor):
             start = end
         x = torch.cat(x, dim=1)
 
-        if self.fc_meta is not None:
-            out = self.fc_meta(metafeat)
+        if self.meta_encoder is not None:
+            out = self.meta_encoder(metafeat)
             x = torch.cat([x, out], dim=1)
 
         x = self.head(x)
-        # x = nn.functional.relu(x)  # cost is always positive
+        x = nn.functional.relu(x)  # cost is always positive
         return x
 
     def _load_meta_checkpoint(self, path: str):
@@ -84,19 +81,23 @@ class CostPredictor(Predictor):
         msg = self.load_state_dict(state)
         logger.info(f"Loaded pretrained weights from {path} with msg: {msg}")
 
-    def fit_pipeline(self, data: dict):
+    def update(self, data: dict, hp: dict | None = None):
+        if hp is None:
+            hp = {}
+        steps = hp.get("steps", 50)
+        lr = hp.get("lr", 1e-3)
+
         state_dict = copy.deepcopy(self.state_dict())
 
         target = data.pop("cost")
+
         pred = self(**data)
-        loss_pre = torch.nn.functional.l1_loss(pred, target)
+        pre_acc = torch.nn.functional.l1_loss(pred, target)
 
         self.train()
-        lr = self.refine_lr if self.meta_trained else self.train_lr
         optimizer = torch.optim.Adam(self.parameters(), lr)
 
-        steps = self.refine_steps if self.meta_trained else self.train_steps
-        for i in range(steps):
+        for _ in range(steps):
             optimizer.zero_grad()
             output = self(**data)
             loss = torch.nn.functional.mse_loss(output, target)
@@ -105,13 +106,13 @@ class CostPredictor(Predictor):
 
         self.eval()
         pred = self(**data)
-        loss_aft = torch.nn.functional.l1_loss(pred, target)
+        final_acc = torch.nn.functional.l1_loss(pred, target)
 
-        if loss_aft > loss_pre:
+        if final_acc > pre_acc:
             self.load_state_dict(state_dict)
-            print("Refinement failed, reverting to previous state.")
+            print("Update failed, reverting to previous state.")
 
-        print(f"Accuracy before: {loss_pre:.4f}, after: {loss_aft:.4f}")
+        print(f"Accuracy before: {pre_acc:.4f}, after: {final_acc:.4f}")
 
     def fit(
         self,
@@ -128,9 +129,6 @@ class CostPredictor(Predictor):
         ckpt_name: str = "cost.pth",
         log_freq: int = 10,
     ):
-        import time
-        from collections import deque
-
         # ============ setup cache dir and device ... ============
         cache_dir = os.path.expanduser(cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
@@ -238,7 +236,7 @@ def dict_collate_fn(batch):
 
 def move_dict_to_device(data, device):
     """Move dictionary to device."""
-    return {k: v.to(device) for k, v in data.items()}
+    return {k: v.to(device) for k, v in data.items() if isinstance(v, torch.Tensor)}
 
 
 class IterationWrapper:

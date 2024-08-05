@@ -1,6 +1,8 @@
 import copy
 import logging
 import os
+import time
+from collections import deque
 from typing import Tuple
 
 import gpytorch
@@ -44,11 +46,6 @@ class DyHPO(Predictor):
         curve_channels: int = 1,
         in_metafeat_dim: int | None = None,
         out_metafeat_dim: int = 16,
-        *,
-        train_steps=1000,
-        train_lr=1e-3,
-        refine_steps=50,
-        refine_lr=1e-3,
     ):
         super().__init__()
 
@@ -75,17 +72,11 @@ class DyHPO(Predictor):
             self.gp_model,
         )
 
-        self.train_steps = train_steps
-        self.train_lr = train_lr
-        self.refine_steps = refine_steps
-        self.refine_lr = refine_lr
-
-    def forward(self, data: dict[str, torch.Tensor]):
-        return self.gp_model(self.encoder(**data))
-
     @torch.no_grad()
     def predict(self, data: dict[str, torch.Tensor]):
-        return self.likelihood(self(data))
+        enc = self.encoder(**data)
+        output = self.gp_model(enc)
+        return self.likelihood(output)
 
     def train_step(self, X: dict[str, torch.Tensor], y: torch.Tensor):
         enc = self.encoder(**X)
@@ -94,68 +85,56 @@ class DyHPO(Predictor):
         loss = -self.mll(output, y)  # type: ignore
         return loss
 
-    def fit_pipeline(self, data: dict[str, torch.Tensor]):
-        state_dict = copy.deepcopy(self.state_dict())
+    def update(self, data: dict[str, torch.Tensor], opt_kwargs: dict = {}):
+        logger.info("Updating the model ...")
+        _state = copy.deepcopy(self.state_dict())
 
-        target = data.pop("target")
-        pred = self.predict(data)
-        loss_pre = (pred.mean - target).abs().mean()
+        bs = opt_kwargs.get("bs", 64)
+        lr = opt_kwargs.get("lr", 1e-3)
+        steps = opt_kwargs.get("steps", 100)
+
+        eval_batch, target = generate_eval_batch(data)
+        try:
+            self.eval()
+            with torch.no_grad():
+                pred = self.predict(eval_batch)
+                init_error = torch.nn.functional.l1_loss(pred.mean, target)
+        except RuntimeError:
+            init_error = 0.0
 
         self.train()
-
         # create optimizer
-        lr = self.refine_lr if self.meta_trained else self.train_lr
         optimizer = torch.optim.Adam(self.parameters(), lr)
 
-        steps = self.refine_steps if self.meta_trained else self.train_steps
-        for i in range(steps):
+        for i, (batch, target) in enumerate(BatchLoader(data, steps, bs)):
+            i += 1
             optimizer.zero_grad()
-            feat = self.encoder(**data)
+            feat = self.encoder(**batch)
             self.gp_model.set_train_data(feat, target, False)
             output = self.gp_model(feat)
             loss = -self.mll(output, target)  # type: ignore
             loss.backward()
             optimizer.step()
 
-            # logger.debug(
-            #     "Iter %2d/%2d - Loss: %1.3f lengthscale: %1.3f noise: %1.3f"
-            #     % (
-            #         i + 1,
-            #         self.train_steps,
-            #         loss.item(),
-            #         self.model.covar_module.base_kernel.lengthscale.item(),
-            #         self.model.likelihood.noise.item(),  # type: ignore
-            #     )
-            # )
+            if not i % (steps // 10):
+                logger.debug(
+                    f"[{i:>{len(str(steps))}}/{steps}]:"
+                    f" loss: {loss.item():1.3f}"
+                    f" lengthscale: {self.gp_model.covar_module.base_kernel.lengthscale.item():.3f}"
+                    f" noise: {self.gp_model.likelihood.noise.item():.3f}"  # type: ignore
+                )
 
         self.eval()
+        with torch.no_grad():
+            pred = self.predict(eval_batch)
+            final_error = torch.nn.functional.l1_loss(pred.mean, target)
 
-        pred = self.predict(data)
-        loss_aft = (pred.mean - target).abs().mean()
+        # if final_error < init_error:
+        #     self.load_state_dict(_state)
+        #     print("no improvement, reverting to previous state.")
+        # logger.debug(f"Acc. before: {init_error:.4f}, after: {final_error:.4f}")
+        print(f"Acc. before: {init_error:.4f}, after: {final_error:.4f}")
 
-        if loss_aft > loss_pre:
-            self.load_state_dict(state_dict)
-            logger.debug("no improvement, reverting to previous state.")
-        logger.debug(f"Loss before: {loss_pre:.4f}, after: {loss_aft:.4f}")
-
-    def _predict_pipeline(
-        self,
-        train_data: dict[str, torch.Tensor],
-        test_data: dict[str, torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self.eval()
-
-        train_data.pop("target")
-        with torch.no_grad():  # , gpytorch.settings.fast_pred_var():
-            # train_x = self.encoder(**train_data)
-            # self.gp_model.set_train_data(train_x, train_y, False)
-
-            test_x = self.encoder(**test_data)
-            pred = self.likelihood(self.gp_model(test_x))
-
-        mean = pred.mean.reshape(-1)
-        std = pred.stddev.reshape(-1)
-        return mean, std
 
     def fit(
         self,
@@ -172,9 +151,6 @@ class DyHPO(Predictor):
         ckpt_name: str = "dyhpo.pth",
         log_freq: int = 10,
     ):
-        import time
-        from collections import deque
-
         # ============ setup cache dir and device ... ============
         cache_dir = os.path.expanduser(cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
@@ -218,9 +194,9 @@ class DyHPO(Predictor):
             it += 1
 
             batch = dict_to_device(batch, dev)
-            config, score, metafeat = batch["config"], batch["score"], batch["metafeat"]
+            config, curve, metafeat = batch["config"], batch["curve"], batch["metafeat"]
 
-            curve, fidelity, target = generate_target(score)
+            curve, fidelity, target = generate_batch(curve)
 
             train_x = {
                 "config": config,
@@ -255,12 +231,12 @@ class DyHPO(Predictor):
                 val_loss = []
                 for batch in IterationWrapper(val_loader, val_iter):
                     batch = dict_to_device(batch, dev)
-                    config, score, metafeat = (
+                    config, curve, metafeat = (
                         batch["config"],
-                        batch["score"],
+                        batch["curve"],
                         batch["metafeat"],
                     )
-                    curve, fidelity, target = generate_target(score)
+                    curve, fidelity, target = generate_batch(curve)
                     batch = {
                         "config": config,
                         "metafeat": metafeat,
@@ -289,6 +265,35 @@ class DyHPO(Predictor):
         return self
 
 
+def get_target(d: dict[str, torch.Tensor]):
+    fidelity = d["fidelity"]
+    curve = d["curve"]
+
+    target = curve[fidelity - 1]
+    _curve = curve.clone()
+    _curve[:, fidelity - 1] = 0
+    return _curve, target
+
+
+def generate_eval_batch(d: dict[str, torch.Tensor]):
+    config, curve = d["config"], d["curve"]
+    metafeat = d.get("metafeat")
+
+    fidelity = (curve != 0).sum(dim=1) - 1
+    target = curve[torch.arange(curve.size(0)), fidelity - 1]
+    _curve = curve.clone()
+    _curve[torch.arange(curve.size(0)), fidelity - 1] = 0
+
+    fidelity = fidelity / curve.shape[1]
+    eval_batch = {
+        "config": config,
+        "curve": _curve,
+        "fidelity": fidelity,
+        "metafeat": metafeat,
+    }
+    return eval_batch, target
+
+
 def dict_collate_fn(batch):
     """Collate function for DataLoader."""
     return {k: torch.stack([d[k] for d in batch]) for k in batch[0].keys()}
@@ -299,7 +304,7 @@ def dict_to_device(data, device):
     return {k: v.to(device) for k, v in data.items()}
 
 
-def generate_target(curve):
+def generate_batch(curve):
     """Generate target from curve."""
     BS, N = curve.shape
     # len of curves
@@ -315,6 +320,46 @@ def generate_target(curve):
     mask = rows > indices
     curve[mask] = 0
     return curve, fidelity, target
+
+
+class BatchLoader:
+    def __init__(self, data: dict, steps: int, bs: int):
+        self.data = data
+        self.steps = steps
+        self.bs = bs
+        self.iter = 0
+    
+    def _generate_batch(self):
+        config, curve = self.data["config"], self.data["curve"]
+        metafeat = self.data.get("metafeat")
+
+        fidelity = (curve != 0).sum(dim=1) - 1
+        target = curve[torch.arange(curve.size(0)), fidelity - 1]
+        _curve = curve.clone()
+        _curve[torch.arange(curve.size(0)), fidelity - 1] = 0
+
+        fidelity = fidelity / curve.shape[1]
+        if config.size(0) < self.bs:
+            idx = torch.arange(config.size(0))
+        else:
+            _bs = min(self.bs, config.size(0))
+            idx = torch.randint(0, config.size(0), (_bs,))
+        return {
+            "config": config[idx],
+            "curve": _curve[idx],
+            "fidelity": fidelity[idx],
+            "metafeat": metafeat,
+        }, target[idx]
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.iter += 1
+        if self.steps < self.iter:
+            raise StopIteration
+        batch = self._generate_batch()
+        return batch
 
 
 class IterationWrapper:

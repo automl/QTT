@@ -40,9 +40,9 @@ class FeatureEncoder(nn.Module):
 
         if in_metafeat_dim is not None:
             enc_dims += out_metafeat_dim
-            self.fc_meta = nn.Linear(in_metafeat_dim, out_metafeat_dim)
+            self.metafeat_encoder = nn.Linear(in_metafeat_dim, out_metafeat_dim)
         else:
-            self.fc_meta = None
+            self.metafeat_encoder = None
 
         self.head = MLP(enc_dims, out_dim, 3, enc_hidden_dim, act_fn=nn.GELU)
 
@@ -69,8 +69,8 @@ class FeatureEncoder(nn.Module):
         x = torch.cat([x, curve], dim=1)
 
         # encode meta-features
-        if self.fc_meta is not None:
-            out = self.fc_meta(metafeat)
+        if self.metafeat_encoder is not None:
+            out = self.metafeat_encoder(metafeat)
             x = torch.cat([x, out], dim=1)
 
         x = self.head(x)

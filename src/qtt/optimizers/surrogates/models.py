@@ -60,19 +60,3 @@ class MLP(nn.Module):
         x = nn.functional.normalize(x, dim=-1, p=2)
         x = self.head(x)
         return x
-
-
-if __name__ == "__main__":
-    import torch
-
-    # test CNN
-    cnn = CNN(in_channels=1, in_dim=50, out_dim=16)
-    x = torch.randn(64, 1, 50)
-    y = cnn(x)
-    print(y.shape)
-
-    # test MLP
-    mlp = MLP(in_dim=50, out_dim=16)
-    x = torch.randn(10, 50)
-    y = mlp(x)
-    print(y.shape)
