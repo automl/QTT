@@ -53,17 +53,15 @@ class QuickTuner:
         self.history: list[object] = []
         self.runtime: list[object] = []
 
-    def reset(self):
-        self.inc_score = 0.0
-        self.inc_config = {}
-        self.inc_cost = 0.0
-        self.inc_fidelity = -1
-        self.inc_id = -1
-        self.traj = []
-        self.history = []
-        self.runtime = []
-
-        self.optimizer.reset()
+    # def reset(self):
+    #     self.inc_score = 0.0
+    #     self.inc_config = {}
+    #     self.inc_cost = 0.0
+    #     self.inc_fidelity = -1
+    #     self.inc_id = -1
+    #     self.traj = []
+    #     self.history = []
+    #     self.runtime = []
 
     def _setup_log_to_file(self, log_to_file: bool, log_file_path: str) -> None:
         if log_to_file:
@@ -87,8 +85,8 @@ class QuickTuner:
             if time_left <= 0:
                 return True
             logger.info(f"Time left: {time_left:.2f}s")
-        if self.optimizer.finished():
-            return True
+        # if self.optimizer.finished():
+        #     return True
         return False
 
     def _save_incumbent(self):
@@ -127,10 +125,10 @@ class QuickTuner:
             logger.warning(f"History not saved: {e!r}")
 
     def _log_job_submission(self, job_info: dict):
-        budget = job_info["budget"]
+        fidelity = job_info["fidelity"]
         config_id = job_info["config_id"]
         logger.info(
-            "Evaluating configuration {} with budget {}".format(config_id, budget),
+            "Evaluating configuration {} with fidelity {}".format(config_id, fidelity),
         )
         logger.info(
             f"Incumbent score: {self.inc_score}",
@@ -143,7 +141,7 @@ class QuickTuner:
 
     def run(
         self,
-        task_info: dict = {},
+        task_info: dict | None = None,
         fevals: Optional[int] = None,
         time_budget: Optional[float] = None,
     ):
@@ -170,7 +168,6 @@ class QuickTuner:
                 break
 
         self._log_end()
-
         self.save()
 
         return (
@@ -193,11 +190,11 @@ class QuickTuner:
             config_id = job_info["config_id"]
             score = result["score"]
             cost = result["cost"]
-            fidelity = result["budget"]
+            fidelity = result["fidelity"]
             config = dict(job_info["config"])
 
             logger.info(
-                f"*** CONFIG: {config_id} - SCORE: {score} - BUDGET: {fidelity} - TIME-TAKEN {cost:.2f} ***",
+                f"*** CONFIG: {config_id} - SCORE: {score:.3f} - FIDELITY: {fidelity} - TIME-TAKEN {cost:.3f} ***",
             )
 
             if self.inc_score < score:
@@ -238,8 +235,8 @@ class QuickTuner:
             else:
                 logger.warning(f"Unknown argument: {key}")
 
-    def _add_task_info(self, task_info: dict):
-        _task_info = task_info.copy()
+    def _add_task_info(self, task_info: dict | None) -> dict:
+        _task_info = {} if task_info is None else task_info.copy()
         _task_info["output-path"] = self.output_path
         return _task_info
 

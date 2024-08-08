@@ -4,7 +4,6 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
-import tqdm
 from torch import nn
 
 from .stoch_norm import StochNorm1d, StochNorm2d, StochNorm3d
@@ -12,6 +11,7 @@ from .stoch_norm import StochNorm1d, StochNorm2d, StochNorm3d
 torch.set_printoptions(precision=10)
 
 logger = logging.getLogger(__name__)
+
 
 class SPRegularization(nn.Module):
     r"""

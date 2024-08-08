@@ -738,8 +738,8 @@ def main(args: Namespace):
                     log_wandb=args.log_wandb and has_wandb,
                 )
 
-            budget = epoch + 1
-            out[epoch] = {"budget": budget}
+            _epoch = epoch + 1
+            out[epoch] = {"epoch": _epoch}
             out[epoch].update([("train_" + k, v) for k, v in train_metrics.items()])
             out[epoch].update([("eval_" + k, v) for k, v in eval_metrics.items()])
 

@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 from ConfigSpace import ConfigurationSpace
 import pandas as pd
@@ -8,35 +8,39 @@ from ..config.utils import encode_config_space
 
 
 class MetaDataset(Dataset):
-    pipeline_norm = None
+    metafeat = None
+    cost = None
+    config_norm = None
     metafeat_norm = None
 
     def __init__(
         self,
-        root: str,
-        cs: ConfigurationSpace,
+        root: str | Path,
         standardize: bool = True,
         to_tensor: bool = True,
     ):
         super().__init__()
-        self.root = root
-        self.cs = cs
+        self.root = Path(root)
         self.standardize = standardize
         self.to_tensor = to_tensor
 
+        self.cs = ConfigurationSpace.from_yaml(self.root / "space.yaml")
+        self.config = self._load_csv(self.root / "config.csv")
+        self.curve = self._load_csv(self.root / "curve.csv")
 
-        self.config = self.load_csv("config.csv")
-        self.curve = self.load_csv("score.csv")
-        self.cost = self.load_csv("cost.csv")
-        self.metafeat = self.load_csv("meta.csv")
+        _path = self.root / "cost.csv"
+        if _path.exists():
+            self.cost = self._load_csv(_path)
+        _path = self.root / "meta.csv"
+        if _path.exists():
+            self.metafeat = self._load_csv(_path)
 
         # preprocess
         self._preprocess_configs()
         self._preprocess_metafeat()
         self.curve.fillna(0, inplace=True)
 
-    def load_csv(self, filename: str):
-        path = os.path.join(self.root, filename)
+    def _load_csv(self, path: Path):
         return pd.read_csv(path, index_col=0)
 
     def _preprocess_configs(self):
@@ -54,7 +58,7 @@ class MetaDataset(Dataset):
             std[NON_NUM] = 1
             df = df - mean / std
             # save mean and std for later use
-            self.pipeline_norm = pd.DataFrame([mean, std], index=["mean", "std"])
+            self.config_norm = pd.DataFrame([mean, std], index=["mean", "std"])
 
         one_hot, _ = encode_config_space(self.cs)
         self.config = df[one_hot]
@@ -78,22 +82,23 @@ class MetaDataset(Dataset):
         return len(self.config)
 
     def __getitem__(self, idx):
-        config = self.config.iloc[idx].values
-        score = self.curve.iloc[idx].values
-        metafeat = self.metafeat.iloc[idx].values
-        cost = self.cost.iloc[idx].values
+        out = {
+            "config": self.config.iloc[idx].values,
+            "curve": self.curve.iloc[idx].values,
+        }
+
+        if self.cost is not None:
+            out["cost"] = self.cost.iloc[idx].values
+        if self.metafeat is not None:
+            out["metafeat"] = self.metafeat.iloc[idx].values
 
         if self.to_tensor:
-            config = torch.tensor(config, dtype=torch.float)
-            score = torch.tensor(score, dtype=torch.float)
-            metafeat = torch.tensor(metafeat, dtype=torch.float)
-            cost = torch.tensor(cost, dtype=torch.float)
+            out = {k: torch.tensor(v, dtype=torch.float) for k, v in out.items()}
 
-        return {"config": config, "curve": score, "metafeat": metafeat, "cost": cost}
+        return out
 
     def get_config_norm(self):
-        """ """
-        return self.pipeline_norm
+        return self.config_norm
 
     def get_metafeat_norm(self):
         return self.metafeat_norm
@@ -105,11 +110,3 @@ class MetaDataset(Dataset):
         if self.metafeat is None:
             return 0
         return len(self.metafeat.columns)
-
-    def get_config_order(self):
-        return self.config.columns.tolist()
-
-    def get_metafeat_order(self):
-        if self.metafeat is None:
-            return []
-        return self.metafeat.columns.tolist()

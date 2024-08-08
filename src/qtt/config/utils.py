@@ -19,27 +19,26 @@ def to_one_hot(hp_name, sequence):
 
 
 def encode_config_space(cs: CS.ConfigurationSpace):
-    _dict = defaultdict(list)
+    type_dict = defaultdict(list)
     for hp in list(cs.values()):
-        # 
         if isinstance(hp, CS.Constant):
             continue
         elif isinstance(hp, CATEGORICAL):
-            enc = to_one_hot(hp.name, hp.choices)
+            one_hot = to_one_hot(hp.name, hp.choices)
         elif isinstance(hp, ORDINAL) and isinstance(hp.default_value, str):
-            enc = to_one_hot(hp.name, hp.sequence)
+            one_hot = to_one_hot(hp.name, hp.sequence)
         else:
-            enc = [hp.name]
+            one_hot = [hp.name]
         
         _type = "none"
         if hp.meta is not None:
             _type = hp.meta.get("type", "none")
-        _dict[_type].extend(enc)
+        type_dict[_type].extend(one_hot)
     
     encoding = []
     splits = []
-    for key in sorted(_dict.keys()):
-        g = _dict[key]
+    for key in sorted(type_dict.keys()):
+        g = type_dict[key]
         g.sort()
         encoding.extend(g)
         splits.append(g)

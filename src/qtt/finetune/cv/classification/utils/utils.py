@@ -15,7 +15,9 @@ def compute_gradient_norm(module, head_name=None):
 
     if head_name is None:
         total_norm = 0
-        parameters = [p for p in module.parameters() if p.grad is not None and p.requires_grad]
+        parameters = [
+            p for p in module.parameters() if p.grad is not None and p.requires_grad
+        ]
         for p in parameters:
             param_norm = p.grad.detach().data.norm(2)
             if not torch.isnan(param_norm):
@@ -68,11 +70,17 @@ class TwoHeadsModel(nn.Module):
         source_output = None
         if isinstance(self.model._model, models.xcit.Xcit):
             if self.model._model.global_pool:
-                x = x[:, 1:].mean(dim=1) if self.model._model.global_pool == "avg" else x[:, 0]
+                x = (
+                    x[:, 1:].mean(dim=1)
+                    if self.model._model.global_pool == "avg"
+                    else x[:, 0]
+                )
 
         elif (
             isinstance(self.model._model, models.swin_transformer_v2.SwinTransformerV2)
-            or isinstance(self.model._model, models.swin_transformer_v2_cr.SwinTransformerV2Cr)
+            or isinstance(
+                self.model._model, models.swin_transformer_v2_cr.SwinTransformerV2Cr
+            )
             or isinstance(self.model._model, models.swin_transformer.SwinTransformer)
         ):
             if self.model._model.global_pool == "avg":
@@ -117,7 +125,9 @@ class IntermediateLayerGetter(nn.Module):
         self.return_layers = return_layers
         self.keep_output = keep_output
         if pool_layer is None:
-            self.pool_layer = nn.Sequential(nn.AdaptiveAvgPool2d(output_size=(1, 1)), nn.Flatten())
+            self.pool_layer = nn.Sequential(
+                nn.AdaptiveAvgPool2d(output_size=(1, 1)), nn.Flatten()
+            )
         else:
             self.pool_layer = pool_layer
 
@@ -132,7 +142,7 @@ class IntermediateLayerGetter(nn.Module):
 
             try:
                 h = layer.register_forward_hook(hook)
-            except AttributeError as e:
+            except AttributeError:
                 raise AttributeError(f"Module {name} not found")
             handles.append(h)
 
@@ -173,11 +183,19 @@ def get_layers(model, num_classes, device, freezable_thd=0, change_head=False):
 
     elif isinstance(model, models.dla.DLA):
         layers = list(model.children())
-        source_head = nn.Sequential(copy.deepcopy(layers[-2]), copy.deepcopy(layers[-1]))
+        source_head = nn.Sequential(
+            copy.deepcopy(layers[-2]), copy.deepcopy(layers[-1])
+        )
 
         if change_head:
             num_ftrs = layers[-2].in_channels
-            model.fc = nn.Conv2d(num_ftrs, num_classes, layers[-2].kernel_size, layers[-2].stride, device=device)
+            model.fc = nn.Conv2d(
+                num_ftrs,
+                num_classes,
+                layers[-2].kernel_size,
+                layers[-2].stride,
+                device=device,
+            )
         head = model.fc
         last_hidden_layer_name = "global_pool"
         head_name = "fc"
@@ -193,7 +211,9 @@ def get_layers(model, num_classes, device, freezable_thd=0, change_head=False):
 
     elif isinstance(model, models.byobnet.ByobNet):
         source_head = nn.Sequential(
-            copy.deepcopy(model.head.global_pool), copy.deepcopy(model.head.fc), copy.deepcopy(model.head.flatten)
+            copy.deepcopy(model.head.global_pool),
+            copy.deepcopy(model.head.fc),
+            copy.deepcopy(model.head.flatten),
         )
         if change_head:
             num_ftrs = model.head.fc.in_features
@@ -282,7 +302,9 @@ def get_layers(model, num_classes, device, freezable_thd=0, change_head=False):
         head_name = "head"
 
     else:
-        raise NotImplementedError(f"model type {type(model)} not implemented for fine-tuning")
+        raise NotImplementedError(
+            f"model type {type(model)} not implemented for fine-tuning"
+        )
 
     hidden_layers = []
     head = []
@@ -297,14 +319,25 @@ def get_layers(model, num_classes, device, freezable_thd=0, change_head=False):
     counting_flags = []
     for layer in hidden_layers:
         count = count_parameters(layer)
-        if count > freezable_thd:  # maybe thd should depend on the no. of params in the net.
+        if (
+            count > freezable_thd
+        ):  # maybe thd should depend on the no. of params in the net.
             counting_flags.append(True)
         else:
             counting_flags.append(False)
-    return last_hidden_layer_name, head_name, hidden_layers, head, source_head, counting_flags
+    return (
+        last_hidden_layer_name,
+        head_name,
+        hidden_layers,
+        head,
+        source_head,
+        counting_flags,
+    )
 
 
-def get_layers_by_module_children(model, num_classes, device, freezable_thd=0, change_head=False):
+def get_layers_by_module_children(
+    model, num_classes, device, freezable_thd=0, change_head=False
+):
     if isinstance(model, models.edgenext.EdgeNeXt):
         source_head = nn.Sequential(
             copy.deepcopy(model.head.global_pool),
@@ -325,11 +358,19 @@ def get_layers_by_module_children(model, num_classes, device, freezable_thd=0, c
     elif isinstance(model, models.dla.DLA):
         layers = list(model.children())
         hidden_layers = layers[:-2]
-        source_head = nn.Sequential(copy.deepcopy(layers[-2]), copy.deepcopy(layers[-1]))
+        source_head = nn.Sequential(
+            copy.deepcopy(layers[-2]), copy.deepcopy(layers[-1])
+        )
 
         if change_head:
             num_ftrs = layers[-2].in_channels
-            model.fc = nn.Conv2d(num_ftrs, num_classes, layers[-2].kernel_size, layers[-2].stride, device=device)
+            model.fc = nn.Conv2d(
+                num_ftrs,
+                num_classes,
+                layers[-2].kernel_size,
+                layers[-2].stride,
+                device=device,
+            )
         head = model.fc
         last_hidden_layer_name = "global_pool"
         head_name = "fc"
@@ -340,14 +381,23 @@ def get_layers_by_module_children(model, num_classes, device, freezable_thd=0, c
             num_ftrs = model.head.in_features
             model.head = nn.Linear(num_ftrs, num_classes).to(device)
 
-        patch_embed, pos_embed, pos_drop, blocks, cls_attn_blocks, norm, head = list(model.children())
-        hidden_layers = [patch_embed, pos_embed, pos_drop] + list(blocks) + list(cls_attn_blocks) + [norm]
+        patch_embed, pos_embed, pos_drop, blocks, cls_attn_blocks, norm, head = list(
+            model.children()
+        )
+        hidden_layers = (
+            [patch_embed, pos_embed, pos_drop]
+            + list(blocks)
+            + list(cls_attn_blocks)
+            + [norm]
+        )
         last_hidden_layer_name = "norm"
         head_name = "head"
 
     elif isinstance(model, models.byobnet.ByobNet):
         source_head = nn.Sequential(
-            copy.deepcopy(model.head.global_pool), copy.deepcopy(model.head.fc), copy.deepcopy(model.head.flatten)
+            copy.deepcopy(model.head.global_pool),
+            copy.deepcopy(model.head.fc),
+            copy.deepcopy(model.head.flatten),
         )
         if change_head:
             num_ftrs = model.head.fc.in_features
@@ -365,8 +415,12 @@ def get_layers_by_module_children(model, num_classes, device, freezable_thd=0, c
             num_ftrs = model.head.in_features
             model.head = nn.Linear(num_ftrs, num_classes).to(device)
 
-        patch_embed, dropout, blocks, cls_attn_blocks, norm, head = list(model.children())
-        hidden_layers = [patch_embed, dropout] + list(blocks) + list(cls_attn_blocks) + [norm]
+        patch_embed, dropout, blocks, cls_attn_blocks, norm, head = list(
+            model.children()
+        )
+        hidden_layers = (
+            [patch_embed, dropout] + list(blocks) + list(cls_attn_blocks) + [norm]
+        )
         last_hidden_layer_name = "norm"
         head_name = "head"
 
@@ -389,8 +443,15 @@ def get_layers_by_module_children(model, num_classes, device, freezable_thd=0, c
             num_ftrs = model.head.in_features
             model.head = nn.Linear(num_ftrs, num_classes).to(device)
 
-        patch_embed, dropout, blocks, cls_attn_blocks, linear, norm, head = list(model.children())
-        hidden_layers = [patch_embed, dropout] + list(blocks) + list(cls_attn_blocks) + [linear, norm]
+        patch_embed, dropout, blocks, cls_attn_blocks, linear, norm, head = list(
+            model.children()
+        )
+        hidden_layers = (
+            [patch_embed, dropout]
+            + list(blocks)
+            + list(cls_attn_blocks)
+            + [linear, norm]
+        )
         last_hidden_layer_name = "norm"
         head_name = "head"
 
@@ -401,8 +462,20 @@ def get_layers_by_module_children(model, num_classes, device, freezable_thd=0, c
             num_ftrs = model.classifier.in_features
             model.classifier = nn.Linear(num_ftrs, num_classes).to(device)
 
-        conv2d_same, batch_norm, sequentials, conv2d, batch_norm2, adaptive_pool, head = list(model.children())
-        hidden_layers = [conv2d_same, batch_norm] + list(sequentials) + [conv2d, batch_norm2, adaptive_pool]
+        (
+            conv2d_same,
+            batch_norm,
+            sequentials,
+            conv2d,
+            batch_norm2,
+            adaptive_pool,
+            head,
+        ) = list(model.children())
+        hidden_layers = (
+            [conv2d_same, batch_norm]
+            + list(sequentials)
+            + [conv2d, batch_norm2, adaptive_pool]
+        )
         last_hidden_layer_name = "global_pool"
         head_name = "classifier"
 
@@ -433,7 +506,9 @@ def get_layers_by_module_children(model, num_classes, device, freezable_thd=0, c
             num_ftrs = model.head.in_features
             model.head.fc = nn.Linear(num_ftrs, num_classes).to(device)
 
-        patch_embed, dropout, identity, blocks, layer_norm, identity, head = list(model.children())
+        patch_embed, dropout, identity, blocks, layer_norm, identity, head = list(
+            model.children()
+        )
         hidden_layers = [patch_embed, dropout] + list(blocks) + [layer_norm]
         last_hidden_layer_name = "fc_norm"  # TODO @Sebastian: not sure...fc_norm is last layer but identity, "norm" would be last with an actual layer
         head_name = "head"
@@ -455,16 +530,27 @@ def get_layers_by_module_children(model, num_classes, device, freezable_thd=0, c
         head_name = "head"
 
     else:
-        raise NotImplementedError(f"model type {type(model)} not implemented for fine-tuning")
+        raise NotImplementedError(
+            f"model type {type(model)} not implemented for fine-tuning"
+        )
 
     counting_flags = []
     for layer in hidden_layers:
         count = count_parameters(layer)
-        if count > freezable_thd:  # maybe thd should depend on the no. of params in the net.
+        if (
+            count > freezable_thd
+        ):  # maybe thd should depend on the no. of params in the net.
             counting_flags.append(True)
         else:
             counting_flags.append(False)
-    return last_hidden_layer_name, head_name, hidden_layers, head, source_head, counting_flags
+    return (
+        last_hidden_layer_name,
+        head_name,
+        hidden_layers,
+        head,
+        source_head,
+        counting_flags,
+    )
 
 
 def prepare_model_for_finetuning(
@@ -487,7 +573,14 @@ def prepare_model_for_finetuning(
         model = model._model
 
     # Adds head and freeze the layers
-    last_hidden_layer_name, head_name, hidden_layers, head, source_head, countable_flags = get_layers(
+    (
+        last_hidden_layer_name,
+        head_name,
+        hidden_layers,
+        head,
+        source_head,
+        countable_flags,
+    ) = get_layers(
         model, num_classes, device, freezable_thd=freezable_thd, change_head=change_head
     )
     if temp_source_head:
@@ -535,7 +628,9 @@ def get_icgen_dataset_info_json(dataset_path, dataset_name):
     dataset_name_wo_tfds = get_dataset_name(dataset_name)
     dataset_name = dataset_name_wo_tfds.replace("/", "_")
     # dataset_name = dataset_path.split("/")[-1]
-    dataset_info_json_path = os.path.join(dataset_path, f"icgen_info_{dataset_name}.json")
+    dataset_info_json_path = os.path.join(
+        dataset_path, f"icgen_info_{dataset_name}.json"
+    )
     with open(dataset_info_json_path, "r") as f:
         return json.load(f)
     return None
@@ -548,12 +643,17 @@ def get_number_of_classes(dataset_path):
     if file_path:
         with open(file_path, "r") as f:
             features = json.load(f)
-            return int(features["featuresDict"]["features"]["label"]["classLabel"]["numClasses"])
+            return int(
+                features["featuresDict"]["features"]["label"]["classLabel"][
+                    "numClasses"
+                ]
+            )
     else:
         file_path = find_file(dataset_path, "label.labels.txt")
         with open(file_path, "r") as f:
             label_list = [line.split("\n")[0] for line in f]
             return len(label_list)
+
 
 def find_file(root, filename):
     """

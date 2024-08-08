@@ -61,8 +61,8 @@ def finetune_script(
 ):
     config = dict(job["config"])
     config_id = job["config_id"]
-    budget = job["budget"]
-    data_path = task_info["data_path"]
+    epochs_step = job["fidelity"]
+    data_path = task_info["data-path"]
     output = task_info.get("output-path", "./output")
     verbosity = task_info.get("verbosity", 2)
 
@@ -108,7 +108,7 @@ def finetune_script(
     for arg in task_args:
         args += [f"--{arg}", str(task_info[arg])]
 
-    args += ["--epochs_step", str(budget)]
+    args += ["--epochs_step", str(epochs_step)]
     args += ["--experiment", str(config_id)]
     args += ["--output", output]
 
@@ -128,28 +128,23 @@ def finetune_script(
         results = finetune.main(args)
     except Exception as e:
         print("Error:", e)
-        result = dict(
-            config_id=config_id,
-            budget=budget,
-            score=0,
-            cost=float("inf"),
-            status=False,
-            info=str(e),
-        )
+        result = job.copy()
+        result["score"] = 0
+        result["cost"] = float("inf")
+        result["status"] = False
+        result["info"] = str(e)
         return result
 
     out = []
     for epoch, values in results.items():
+        result = job.copy()
         score = float(values["eval_top1"]) / 100
         cost = float(values["train_time"]) + float(values["eval_time"])
-        budget = int(values["budget"])
-        result = dict(
-            config_id=config_id,
-            budget=budget,
-            score=score,
-            cost=cost,
-            status=True,
-        )
+        result["score"] = score
+        result["cost"] = cost
+        result["status"] = True
+        result["info"] = values
+        result["fidelity"] = epoch
         out.append(result)
 
     return out

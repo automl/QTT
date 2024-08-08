@@ -1,0 +1,34 @@
+conditions: []
+forbiddens: []
+format_version: 0.4
+hyperparameters:
+- default_value: 2
+  log: false
+  lower: 1
+  meta: null
+  name: num_channels
+  type: uniform_int
+  upper: 3
+- default_value: 50
+  log: false
+  lower: 1
+  meta: null
+  name: num_classes
+  type: uniform_int
+  upper: 100
+- default_value: 50
+  log: false
+  lower: 1
+  meta: null
+  name: num_features
+  type: uniform_int
+  upper: 100
+- default_value: 50
+  log: false
+  lower: 1
+  meta: null
+  name: num_samples
+  type: uniform_int
+  upper: 100
+name: cv-classification/meta-features
+python_module_version: 1.1.3

@@ -1,17 +1,17 @@
-import copy
-import json
 import logging
 import os
-import time
-from collections import deque
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, StackDataset, random_split
+
+from qtt.data.utils import IterLoader, dict_collate, dict_tensor_to_device
 
 from .models import MLP
 from .predictor import Predictor
+from .utils import MetricLogger
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,11 @@ class CostPredictor(Predictor):
         **kwargs,
     ):
         super().__init__()
+        if kwargs:
+            for key in kwargs:
+                logger.info(
+                    f"CostPredictor.__init__() got an unexpected keyword argument: {key}"
+                )
         if isinstance(in_dim, int):
             in_dim = [in_dim]
         self.in_dim = in_dim
@@ -46,14 +51,6 @@ class CostPredictor(Predictor):
             self.meta_encoder = None
 
         self.head = MLP(enc_dims, 1, enc_nlayers, enc_hidden_dim, act_fn=nn.GELU)
-
-    @classmethod
-    def from_pretrained(cls, root: str) -> "CostPredictor":
-        config = json.load(open(os.path.join(root, "config.json"), "r"))
-        model = cls(**config)
-        model_path = os.path.join(root, "estimator.pth")
-        model._load_meta_checkpoint(model_path)
-        return model
 
     def forward(self, config, metafeat=None, **kwargs):
         # encode config
@@ -74,54 +71,73 @@ class CostPredictor(Predictor):
         x = nn.functional.relu(x)  # cost is always positive
         return x
 
-    def _load_meta_checkpoint(self, path: str):
-        self.meta_checkpoint = path
-        self.meta_trained = True
-        state = torch.load(path, map_location="cpu")
-        msg = self.load_state_dict(state)
-        logger.info(f"Loaded pretrained weights from {path} with msg: {msg}")
-
-    def update(self, data: dict, hp: dict | None = None):
-        if hp is None:
-            hp = {}
-        steps = hp.get("steps", 50)
-        lr = hp.get("lr", 1e-3)
-
-        state_dict = copy.deepcopy(self.state_dict())
-
-        target = data.pop("cost")
-
-        pred = self(**data)
-        pre_acc = torch.nn.functional.l1_loss(pred, target)
-
-        self.train()
-        optimizer = torch.optim.Adam(self.parameters(), lr)
-
-        for _ in range(steps):
-            optimizer.zero_grad()
-            output = self(**data)
-            loss = torch.nn.functional.mse_loss(output, target)
-            loss.backward()
-            optimizer.step()
-
-        self.eval()
-        pred = self(**data)
-        final_acc = torch.nn.functional.l1_loss(pred, target)
-
-        if final_acc > pre_acc:
-            self.load_state_dict(state_dict)
-            print("Update failed, reverting to previous state.")
-
-        print(f"Accuracy before: {pre_acc:.4f}, after: {final_acc:.4f}")
-
     def fit(
         self,
         dataset: Dataset,
-        bs: int = 32,
+        bs: int = 256,
         lr: float = 1e-3,
-        n_iter: int = 10_000,
+        train_steps: int = 10_000,
         val_freq: int = 100,
-        val_iter: int = 100,
+        val_steps: int = 1000,
+        use_scheduler: bool = False,
+        test_size: float = 0.2,
+        seed: int | None = None,
+        cache_dir: str = "~/.cache/qtt/cost_predictor",
+        ckpt_name: str = "cost.pth",
+        log_freq: int = 10,
+    ):
+        return self._fit(
+            dataset,
+            bs,
+            lr,
+            train_steps,
+            val_freq,
+            use_scheduler,
+            test_size,
+            seed,
+            cache_dir,
+            ckpt_name,
+            log_freq,
+        )
+
+    def update(
+        self,
+        data: Dataset | dict,
+        bs: int = 64,
+        lr: float = 1e-4,
+        train_steps: int = 100,
+        val_freq: int = 10,
+        val_steps: int = 100,
+        use_scheduler: bool = False,
+        test_size: float = 0.2,
+        seed: int | None = None,
+        cache_dir: str = "~/.cache/qtt/cost_predictor",
+        ckpt_name: str = "cost.pth",
+        log_freq: int = 10,
+    ):
+        if isinstance(data, dict):
+            dataset = StackDataset(**data)
+        return self._fit(
+            dataset,
+            bs,
+            lr,
+            train_steps,
+            val_freq,
+            use_scheduler,
+            test_size,
+            seed,
+            cache_dir,
+            ckpt_name,
+            log_freq,
+        )
+
+    def _fit(
+        self,
+        dataset: Dataset,
+        bs: int = 128,
+        lr: float = 1e-3,
+        train_steps: int = 10_000,
+        val_freq: int = 10,
         use_scheduler: bool = False,
         test_size: float = 0.2,
         seed: int | None = None,
@@ -134,8 +150,8 @@ class CostPredictor(Predictor):
         os.makedirs(cache_dir, exist_ok=True)
         save_path = os.path.join(cache_dir, ckpt_name)
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.to(device)
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(dev)
 
         # ============ preparing data ... ============
         generator = torch.Generator().manual_seed(seed) if seed is not None else None
@@ -144,117 +160,83 @@ class CostPredictor(Predictor):
             lengths=[1 - test_size, test_size],
             generator=generator,
         )
-        train_loader = DataLoader(
+        train_loader = IterLoader(
             dataset=trainset,
             batch_size=bs,
             shuffle=True,
             drop_last=True,
-            collate_fn=dict_collate_fn,
+            collate_fn=dict_collate,
+            steps=train_steps,
         )
         val_loader = DataLoader(
             dataset=valset,
             batch_size=bs,
-            collate_fn=dict_collate_fn,
+            collate_fn=dict_collate,
         )
 
         # ============ preparing optimizer ... ============
         optimizer = torch.optim.AdamW(self.parameters(), lr)
         scheduler = None
         if use_scheduler:
-            scheduler = CosineAnnealingLR(optimizer, n_iter, eta_min=1e-7)
+            scheduler = CosineAnnealingLR(optimizer, train_steps, eta_min=1e-6)
 
         # ============ training ... ============
-        min_loss = float("inf")
-        loss_history = deque(maxlen=20)
+        torch.save(self.state_dict(), save_path)
+        min_error = self.__validate(dev, val_loader)
+        print(f"Initial validation error: {min_error:.3f}")
         self.train()
-        start_time = time.time()
-        for it, batch in enumerate(IterationWrapper(train_loader, n_iter)):
-            it += 1
+        metric_log = MetricLogger(delimiter="  ")
+        for it, batch in enumerate(
+            metric_log.log_every(train_loader, log_freq, "TRAIN"), 1
+        ):
+            batch = dict_tensor_to_device(batch, dev)
+            config, metafeat, cost = batch["config"], batch["metafeat"], batch["cost"]
 
-            batch = move_dict_to_device(batch, device)
-            config = batch["config"]
-            metafeat = batch["metafeat"]
-            target = batch["cost"]
-
+            # forward + loss
             output = self(config, metafeat)
-            loss = torch.nn.functional.mse_loss(output, target)
-            optimizer.zero_grad()
+            loss = torch.nn.functional.mse_loss(output, cost)
+
+            # update
             loss.backward()
-
             optimizer.step()
-            if scheduler is not None:
-                scheduler.step()
+            optimizer.zero_grad()
+            scheduler.step() if scheduler is not None else None            
 
-            loss_history.append(loss.item())
-            if it % log_freq == 0:
-                _loss = sum(loss_history) / len(loss_history)
-                elapsed = time.time() - start_time
-                eta = elapsed / it * (n_iter - it)
-                print(
-                    f"TRAIN [{it}/{n_iter}]:",
-                    f"loss: {_loss:.3f}",
-                    f"eta: {eta:.2f}s",
-                    sep="  ",
-                )
+            # logging
+            metric_log.update(loss=loss.item())
 
+            # validation
             if not it % val_freq:
                 self.eval()
-                val_loss = []
-                for batch in IterationWrapper(val_loader, val_iter):
-                    batch = move_dict_to_device(batch, device)
-                    config = batch["config"]
-                    metafeat = batch["metafeat"]
-                    target = batch["cost"]
-
-                    output = self(config, metafeat)
-                    loss = torch.nn.functional.l1_loss(output, target)
-                    val_loss.append(loss.item())
-
-                val_error = sum(val_loss) / len(val_loss)
-                if val_error < min_loss:
-                    min_loss = val_error
+                val_error = self.__validate(dev, val_loader)
+                print(f"VAL [{it}] val-error: {val_error:.3f}")
+                if val_error < min_error:
+                    min_error = val_error
                     torch.save(self.state_dict(), save_path)
-                    print(
-                        f"VAL  [{it}]: Checkpoint saved with val-error: {val_error:.3f}"
-                    )
-                else:
-                    print(f"VAL  [{it}]: val-error: {val_error:.3f}")
-
                 self.train()
 
         # Load the model with the best validation error
-        print(f"Loading the model with the best validation error: {min_loss:.3f}")
+        print(f"Loading the model with the best validation error: {min_error:.3f}")
         self.load_state_dict(torch.load(save_path))
-
         return self
 
+    def __validate(self, dev, val_loader):
+        val_loss = []
+        for batch in val_loader:
+            batch = dict_tensor_to_device(batch, dev)
+            config, metafeat, cost = batch["config"], batch["metafeat"], batch["cost"]
+            output = self(config, metafeat)
+            loss = torch.nn.functional.l1_loss(output, cost)
+            val_loss.append(loss.item())
+        val_error = sum(val_loss) / len(val_loss)
+        return val_error
 
-def dict_collate_fn(batch):
-    """Collate function for DataLoader."""
-    return {k: torch.stack([d[k] for d in batch]) for k in batch[0].keys()}
+    def save(self, path: str | Path, name: str = "cost_predictor.pth"):
+        path = Path(path)
+        torch.save(self.state_dict(), path / name)
 
-
-def move_dict_to_device(data, device):
-    """Move dictionary to device."""
-    return {k: v.to(device) for k, v in data.items() if isinstance(v, torch.Tensor)}
-
-
-class IterationWrapper:
-    def __init__(self, loader, n):
-        self.loader = loader
-        self.iterator = iter(loader)
-        self.n = n
-        self.step = 0
-
-    def __iter__(self):
+    def load(self, path: str | Path, name: str = "cost_predictor.pth"):
+        path = Path(path)
+        ckp = torch.load(path / name)
+        self.load_state_dict(ckp)
         return self
-
-    def __next__(self):
-        self.step += 1
-        if self.step > self.n:
-            raise StopIteration
-        try:
-            return next(self.iterator)
-        except StopIteration:
-            self.iterator = iter(self.loader)
-            return next(self.iterator)

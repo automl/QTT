@@ -1,5 +1,7 @@
 import logging
+import pickle
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 import pandas as pd
@@ -25,12 +27,20 @@ ACQ_FN = [
     "exploit",
 ]
 
+IGNORE_SAVE_LOAD_VARS = [
+    "cs",
+    "cs_meta",
+    "dev",
+    "cost_predictor",
+    "perf_predictor",
+]
+
 
 class QuickOptimizer(BaseOptimizer):
     def __init__(
         self,
         cs: ConfigurationSpace,
-        cs_meta: ConfigurationSpace | None = None,
+        meta: ConfigurationSpace | None = None,
         *,
         init_steps: int = 10,
         cost_aware: bool = False,
@@ -44,7 +54,6 @@ class QuickOptimizer(BaseOptimizer):
         seed: int | None = None,
         verbosity: int = 2,
     ):
-        super().__init__()
         set_logger_verbosity(verbosity, logger)
         self.verbosity = verbosity
 
@@ -58,19 +67,19 @@ class QuickOptimizer(BaseOptimizer):
 
         # configuration space
         self.cs = cs
-        self.cs_meta = cs_meta
+        self.meta = meta
         self.max_fidelity = int(cs["max_fidelity"].default_value)
 
         cs_enc, cs_splits = encode_config_space(cs)
         self.cs_encoding = cs_enc
         self.cs_splits = cs_splits
-        if cs_meta is not None:
-            cs_meta_enc, _ = encode_config_space(cs_meta)
+        if meta is not None:
+            cs_meta_enc, _ = encode_config_space(meta)
             self.cs_meta_enc = cs_meta_enc
         else:
             self.cs_meta_enc = None
-        self.metafeat: np.ndarray | None = None
 
+        self.metafeat: np.ndarray | None = None
         self.config_norm: pd.DataFrame | None = None
         self.metafeat_norm: pd.DataFrame | None = None
 
@@ -140,8 +149,8 @@ class QuickOptimizer(BaseOptimizer):
         df = pd.DataFrame(encoded_configs)
 
         if self.config_norm is not None:
-            mean = self.config_norm.loc["mean"]
-            std = self.config_norm.loc["std"]
+            mean = self.config_norm.T["mean"]
+            std = self.config_norm.T["std"]
             std[std == 0] = 1
             df = (df - mean) / std
 
@@ -151,14 +160,14 @@ class QuickOptimizer(BaseOptimizer):
     def setup(
         self,
         n: int,
-        metafeat: dict[str, int | float] | None = None,
+        metafeat: Mapping[str, int | float] | None = None,
     ):
         self.N = n
-        self.fidelities: np.ndarray = np.zeros(n, dtype=np.int64)
-        self.scores: np.ndarray = np.zeros((n, self.max_fidelity), dtype=np.float64)
-        self.costs: np.ndarray = np.full(n, np.nan, dtype=np.float64)
+        self.fidelities: np.ndarray = np.zeros(n, dtype=int)
+        self.curves: np.ndarray = np.zeros((n, self.max_fidelity), dtype=float)
+        self.costs: np.ndarray = np.full(n, np.nan, dtype=float)
         if self.n_iter_no_change is not None:
-            self._score_history = np.zeros((n, self.n_iter_no_change), dtype=np.float64)
+            self._score_history = np.zeros((n, self.n_iter_no_change), dtype=float)
 
         if self.seed is not None:
             self.cs.seed(self.seed)
@@ -186,7 +195,7 @@ class QuickOptimizer(BaseOptimizer):
         idx = np.array(list(self.evaled), dtype=int)
         config = self.configs[idx]
         fidelity = self.fidelities[idx] / self.max_fidelity
-        curve = self.scores[idx]
+        curve = self.curves[idx]
 
         config = torch.tensor(config, dtype=torch.float, device=self.dev)
         fidelity = torch.tensor(fidelity, dtype=torch.float, device=self.dev)
@@ -207,7 +216,7 @@ class QuickOptimizer(BaseOptimizer):
         config = torch.tensor(self.configs, dtype=torch.float, device=self.dev)
         fidelity = torch.tensor(self.fidelities, dtype=torch.float, device=self.dev)
         fidelity /= self.max_fidelity
-        curve = torch.tensor(self.scores, dtype=torch.float, device=self.dev)
+        curve = torch.tensor(self.curves, dtype=torch.float, device=self.dev)
         metafeat = None
         if self.metafeat is not None:
             metafeat = torch.tensor(self.metafeat, dtype=torch.float, device=self.dev)
@@ -261,7 +270,7 @@ class QuickOptimizer(BaseOptimizer):
 
     def _optimize_acq_fn(self, mean, std, cost) -> list[int]:
         # max score per fidelity
-        y_max = self.scores.max(axis=0)
+        y_max = self.curves.max(axis=0)
         y_max[y_max == 0] = y_max.max()
 
         next_fidelitys = np.minimum(self.fidelities + 1, self.max_fidelity)
@@ -286,8 +295,8 @@ class QuickOptimizer(BaseOptimizer):
 
         self.ask_count += 1
         if len(self.evaled) < self.init_steps:
-            not_evaled = set(range(self.N)) - self.evaled - self.failed - self.stoped
-            index = not_evaled.pop()
+            left = set(range(self.N)) - self.evaled - self.failed - self.stoped
+            index = left.pop()
             fidelity = 1
         else:
             index = self._ask()
@@ -299,7 +308,13 @@ class QuickOptimizer(BaseOptimizer):
             "fidelity": fidelity,
         }
 
-    def tell(self, result: dict):
+    def tell(self, result: dict | list):
+        if isinstance(result, dict):
+            result = [result]
+        for res in result:
+            self._tell(res)
+
+    def _tell(self, result: dict):
         self.tell_count += 1
 
         index = result["config_id"]
@@ -316,7 +331,7 @@ class QuickOptimizer(BaseOptimizer):
             self.stoped.add(index)
 
         # update trackers
-        self.scores[index, fidelity - 1] = score
+        self.curves[index, fidelity - 1] = score
         self.fidelities[index] = fidelity
         self.costs[index] = cost
         self.history.append(result)
@@ -328,9 +343,13 @@ class QuickOptimizer(BaseOptimizer):
                 self.stoped.add(index)
             self._score_history[index][fidelity % self.n_iter_no_change] = score
 
+    def ante(self):
+        pass
+
+    def post(self):
+        pass
+
     def update(self):
-        # update the predictors
-        # if self.eval_count >= self.init_steps - 1:
         train_data = self._get_history_data()
         self.perf_predictor.update(train_data)
         # if self.cost_predictor is not None:
@@ -351,26 +370,28 @@ class QuickOptimizer(BaseOptimizer):
 
         ckp = dict(vars(self))
 
-        pop_list = ["cs", "cs_meta", "dev", "cost_predictor", "perf_predictor"]
-        for key in pop_list:
+        for key in IGNORE_SAVE_LOAD_VARS:
             ckp.pop(key)
 
-        self.cs.to_yaml(path / "space.yaml")
-        if self.cs_meta is not None:
-            self.cs_meta.to_yaml(path / "meta.yaml")
+        self.cs.to_yaml(path / "cs.yaml")
+        if self.meta is not None:
+            self.meta.to_yaml(path / "meta.yaml")
 
-        ckp["perf_predictor"] = self.perf_predictor.state_dict()
+        self.perf_predictor.save(path)
         if self.cost_predictor is not None:
-            ckp["cost_predictor"] = self.cost_predictor.state_dict()
-        torch.save(ckp, path / "checkpoint.pth")
+            self.cost_predictor.save(path)
+
+        # torch.save(ckp, path / "checkpoint.pth")
+        with open(path / "quick.pkl", "wb") as f:
+            pickle.dump(ckp, f)
 
     @classmethod
     def load(cls, path: str | Path):
         path = Path(path)
         assert path.exists(), f"Path {path} does not exist"
 
-        # load configspace
-        cs = ConfigurationSpace.from_yaml(path / "space.yaml")
+        # load configspace(s)
+        cs = ConfigurationSpace.from_yaml(path / "cs.yaml")
         cs_meta = None
         if (path / "meta.yaml").exists():
             cs_meta = ConfigurationSpace.from_yaml(path / "meta.yaml")
@@ -379,20 +400,14 @@ class QuickOptimizer(BaseOptimizer):
         opt = cls(cs, cs_meta)
 
         # load checkpoint
-        checkpoint = torch.load(path / "checkpoint.pth", map_location="cpu")
+        with open(path / "quick.pkl", "rb") as f:
+            checkpoint: dict = pickle.load(f)
         # update instance attributes
         for key, value in vars(opt).items():
+            if key in IGNORE_SAVE_LOAD_VARS:
+                continue
             if key in checkpoint:
-                if hasattr(value, "load_state_dict"):
-                    try:
-                        value.load_state_dict(checkpoint[key], strict=False)
-                    except TypeError:
-                        try:
-                            value.load_state_dict(checkpoint[key])
-                        except ValueError:
-                            logger.info(f"failed to load '{key}' from checkpoint")
-                else:
-                    setattr(opt, key, checkpoint.get(key, value))
+                setattr(opt, key, checkpoint.get(key, value))
             else:
                 logger.info(f"'{key}' not in checkpoint")
         return opt
