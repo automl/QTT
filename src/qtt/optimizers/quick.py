@@ -9,13 +9,10 @@ import torch
 from ConfigSpace import Configuration, ConfigurationSpace
 from scipy.stats import norm
 
-from qtt.config.utils import encode_config_space
-from qtt.utils import fix_random_seeds, set_logger_verbosity
-
-from ..data.dataset import MetaDataset
+from ..data import MetaDataset
+from ..utils import encode_config_space, fix_random_seeds, set_logger_verbosity
 from .optimizer import BaseOptimizer
-from .surrogates import CostPredictor, DyHPO
-from .surrogates.predictor import Predictor
+from .surrogates import CostPredictor, DyHPO, Predictor
 
 logger = logging.getLogger(__name__)
 
@@ -129,32 +126,16 @@ class QuickOptimizer(BaseOptimizer):
         }
         return kwargs
 
-    def _config_to_vector(self, cfg_lst: list[Configuration]) -> np.ndarray:
-        encoded_configs = []
-        for config in cfg_lst:
-            config = dict(config)
-            enc_config = dict()
-            for hp in self.cs_encoding:
-                # categorical hyperparameters
-                if len(hp.split("=")) > 1:
-                    key, choice = hp.split("=")
-                    val = 1 if config.get(key) == choice else 0
-                else:
-                    val = config.get(hp, 0)
-                    if isinstance(val, bool):
-                        val = int(val)
-                enc_config[hp] = val
-            encoded_configs.append(enc_config)
-
-        df = pd.DataFrame(encoded_configs)
+    def _config_to_vector(self, configs: list[Configuration]) -> np.ndarray:
+        df =pd.DataFrame(configs, columns=self.cs_encoding)
+        df.fillna(0, inplace=True)
 
         if self.config_norm is not None:
-            mean = self.config_norm.T["mean"]
-            std = self.config_norm.T["std"]
-            std[std == 0] = 1
+            mean = self.config_norm.iloc("mean")
+            std = self.config_norm.iloc("std")
             df = (df - mean) / std
 
-        df = df[self.cs_encoding]
+        df = df[self.cs_encoding]  # assert columns order
         return df.to_numpy(dtype=float)
 
     def setup(

@@ -6,8 +6,7 @@ from pathlib import Path
 import numpy as np
 from ConfigSpace import ConfigurationSpace
 
-from qtt.utils import fix_random_seeds, set_logger_verbosity
-
+from ..utils import fix_random_seeds, set_logger_verbosity
 from .optimizer import BaseOptimizer
 
 logger = logging.getLogger(__name__)

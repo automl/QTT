@@ -84,7 +84,8 @@ class TwoHeadsModel(nn.Module):
             or isinstance(self.model._model, models.swin_transformer.SwinTransformer)
         ):
             if self.model._model.global_pool == "avg":
-                x = x.mean(dim=1)
+                # x = x.mean(dim=1)
+                pass
 
         elif isinstance(self.model._model, models.volo.VOLO):
             if self.model._model.global_pool == "avg":

@@ -18,7 +18,7 @@ def to_one_hot(hp_name, sequence):
     return [f"{hp_name}={c}" for c in sequence]
 
 
-def encode_config_space(cs: CS.ConfigurationSpace):
+def encode_config_space(cs: CS.ConfigurationSpace) -> tuple[list[str], list[list[str]]]:
     type_dict = defaultdict(list)
     for hp in list(cs.values()):
         if isinstance(hp, CS.Constant):
@@ -29,12 +29,12 @@ def encode_config_space(cs: CS.ConfigurationSpace):
             one_hot = to_one_hot(hp.name, hp.sequence)
         else:
             one_hot = [hp.name]
-        
+
         _type = "none"
         if hp.meta is not None:
             _type = hp.meta.get("type", "none")
         type_dict[_type].extend(one_hot)
-    
+
     encoding = []
     splits = []
     for key in sorted(type_dict.keys()):
@@ -62,3 +62,10 @@ def config_to_vector(configs: list[CS.Configuration], one_hot):
             enc_config[hp] = val
         encoded_configs.append(enc_config)
     return encoded_configs
+
+def config_to_serializible_dict(config: CS.Configuration) -> dict:
+    serializable_dict = dict(config)
+    for k, v in serializable_dict.items():
+        if hasattr(v, "item"):
+            serializable_dict[k] = v.item()
+    return serializable_dict

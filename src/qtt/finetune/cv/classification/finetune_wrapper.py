@@ -1,4 +1,5 @@
 import os
+import time
 
 from . import finetune
 from .utils.build_parser import build_parser
@@ -91,12 +92,11 @@ def finetune_script(
 
     # DATA AUGMENTATIONS
     data_augmentation = config.get("data_augmentation")
-    if data_augmentation != "no_augment":
-        if data_augmentation == "auto_augment":
-            vers = config.get("auto_augment")
-            args += ["--auto_augment", str(vers)]
-        else:
-            args += [f"--{data_augmentation}"]
+    if data_augmentation == "auto_augment":
+        vers = config.get("auto_augment")
+        args += ["--auto_augment", str(vers)]
+    elif data_augmentation == "trivial_augment":
+        args += [f"--{data_augmentation}"]
 
     # OPTIMIZER BETAS
     opt_betas = config.get("opt_betas")
@@ -123,9 +123,10 @@ def finetune_script(
     parser = build_parser()
     args, _ = parser.parse_known_args(args)
     args.verbosity = verbosity
-
+    
+    start = time.time()
     try:
-        results = finetune.main(args)
+        metrics = finetune.main(args)
     except Exception as e:
         print("Error:", e)
         result = job.copy()
@@ -134,17 +135,12 @@ def finetune_script(
         result["status"] = False
         result["info"] = str(e)
         return result
+    cost = time.time() - start
 
-    out = []
-    for epoch, values in results.items():
-        result = job.copy()
-        score = float(values["eval_top1"]) / 100
-        cost = float(values["train_time"]) + float(values["eval_time"])
-        result["score"] = score
-        result["cost"] = cost
-        result["status"] = True
-        result["info"] = values
-        result["fidelity"] = epoch
-        out.append(result)
+    result = job.copy()
+    result["score"] = metrics["score"]
+    result["cost"] = cost
+    result["status"] = True
+    result["info"] = metrics
 
-    return out
+    return result

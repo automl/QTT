@@ -1,10 +1,11 @@
 from pathlib import Path
 
-from ConfigSpace import ConfigurationSpace
 import pandas as pd
 import torch
+from ConfigSpace import ConfigurationSpace
 from torch.utils.data import Dataset
-from ..config.utils import encode_config_space
+
+from qtt.utils import encode_config_space
 
 
 class MetaDataset(Dataset):

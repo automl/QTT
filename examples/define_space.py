@@ -82,6 +82,7 @@ cond_5 = OrConjunction(
 )
 cond_6 = EqualsCondition(ra_nops, da, "random_augment")
 cond_7 = EqualsCondition(ra_mag, da, "random_augment")
+cond_8 = EqualsCondition(aa, da, "auto_augment")
 cs.add(
     mix,
     mix_p,
@@ -121,6 +122,7 @@ cs.add(
     cond_5,
     cond_6,
     cond_7,
+    cond_8,
 )
 
 # model
@@ -176,4 +178,4 @@ num_channels = Integer("num_channels", (1, 3))
 
 metafeat.add(num_classes, num_features, num_samples, num_channels)
 
-metafeat.to_yaml("metafeat.yaml", indent=2)
+metafeat.to_yaml("meta.yaml", indent=2)

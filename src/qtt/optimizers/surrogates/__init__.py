@@ -1,4 +1,5 @@
-from .dyhpo import DyHPO
 from .cost_predictor import CostPredictor
+from .dyhpo import DyHPO
+from .predictor import Predictor
 
-__all__ = ["CostPredictor", "DyHPO"]
+__all__ = ["DyHPO", "CostPredictor", "Predictor"]

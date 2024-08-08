@@ -116,7 +116,7 @@ except ImportError:
     has_synetune = False
 
 
-logger = logging.getLogger("finetune")
+logger = logging.getLogger(__name__)
 
 
 def main(args: Namespace):
@@ -647,7 +647,7 @@ def main(args: Namespace):
         else:
             lr_scheduler.step(start_epoch)
 
-    out = OrderedDict()
+    out = dict()
     try:
         for epoch in range(start_epoch, num_epochs):
             if args.epochs_step != -1 and epoch == args.epochs_step:
@@ -738,10 +738,10 @@ def main(args: Namespace):
                     log_wandb=args.log_wandb and has_wandb,
                 )
 
-            _epoch = epoch + 1
-            out[epoch] = {"epoch": _epoch}
-            out[epoch].update([("train_" + k, v) for k, v in train_metrics.items()])
-            out[epoch].update([("eval_" + k, v) for k, v in eval_metrics.items()])
+            out["score"] = eval_metrics["top1"] / 100.0
+            out["epoch"] = epoch + 1
+            out.update([("train_" + k, v) for k, v in train_metrics.items()])
+            out.update([("eval_" + k, v) for k, v in eval_metrics.items()])
 
             if not args.test_mode and saver is not None:
                 # save proper checkpoint with eval metric

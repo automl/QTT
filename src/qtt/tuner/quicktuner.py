@@ -7,12 +7,15 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from qtt.utils.log_utils import add_log_to_file, set_logger_verbosity
-from qtt.utils.setup import setup_outputdir
-
 from ..optimizers import BaseOptimizer
+from ..utils import (
+    add_log_to_file,
+    config_to_serializible_dict,
+    set_logger_verbosity,
+    setup_outputdir,
+)
 
-logger = logging.getLogger("QuickTuner")
+logger = logging.getLogger(__name__)
 
 
 class QuickTuner:
@@ -108,18 +111,15 @@ class QuickTuner:
             return
         try:
             history_path = os.path.join(self.output_path, "history.csv")
-            history_df = pd.DataFrame(
-                self.history,
-                columns=["config_id", "config", "score", "cost", "fidelity", "info"],
-            )
+            history_df = pd.DataFrame(self.history)
             # Check if the 'info' column is empty or contains only None values
-            if (
-                history_df["info"]
-                .apply(lambda x: (isinstance(x, dict) and len(x) == 0))
-                .all()
-            ):
-                # Drop the 'info' column
-                history_df = history_df.drop(columns=["info"])
+            # if (
+            #     history_df["info"]
+            #     .apply(lambda x: (isinstance(x, dict) and len(x) == 0))
+            #     .all()
+            # ):
+            #     # Drop the 'info' column
+            #     history_df = history_df.drop(columns=["info"])
             history_df.to_csv(history_path)
         except Exception as e:
             logger.warning(f"History not saved: {e!r}")
@@ -150,16 +150,18 @@ class QuickTuner:
 
         self.start = time.time()
         while True:
-            #
             self.optimizer.ante()
+
             # ask for a new configuration
             job_info = self.optimizer.ask()
+            if job_info is None:
+                break
             _task_info = self._add_task_info(task_info)
 
             self._log_job_submission(job_info)
             result = self.f(job_info, task_info=_task_info)
 
-            self._log_result(job_info, result)
+            self._log_result(result)
             self.optimizer.tell(result)
 
             self.optimizer.post()
@@ -181,20 +183,23 @@ class QuickTuner:
         self.runtime.append(runtime)
         self.history.append(history)
 
-    def _log_result(self, job_info, results):
+    def _log_result(self, results):
         if isinstance(results, dict):
             results = [results]
 
         inc_changed = False
         for result in results:
-            config_id = job_info["config_id"]
+            config_id = result["config_id"]
             score = result["score"]
             cost = result["cost"]
             fidelity = result["fidelity"]
-            config = dict(job_info["config"])
+            config = config_to_serializible_dict(result["config"])
 
             logger.info(
-                f"*** CONFIG: {config_id} - SCORE: {score:.3f} - FIDELITY: {fidelity} - TIME-TAKEN {cost:.3f} ***",
+                f"*** CONFIG: {config_id}"
+                f" - SCORE: {score:.3f}"
+                f" - FIDELITY: {fidelity}"
+                f" - TIME-TAKEN {cost:.3f} ***"
             )
 
             if self.inc_score < score:
@@ -203,20 +208,15 @@ class QuickTuner:
                 self.inc_fidelity = fidelity
                 self.inc_id = config_id
                 self.inc_config = config
+                self.inc_info = result.get("info")
                 inc_changed = True
 
-        self._update_trackers(
-            self.inc_score,
-            time.time() - self.start,
-            (
-                config_id,
-                config,
-                score,
-                cost,
-                fidelity,
-                result.get("info", {}),
-            ),
-        )
+            result["config"] = config
+            self._update_trackers(
+                self.inc_score,
+                time.time() - self.start,
+                result,
+            )
 
         if self.save_freq == "step" or (self.save_freq == "incumbent" and inc_changed):
             self.save()
