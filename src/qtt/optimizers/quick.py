@@ -26,7 +26,7 @@ ACQ_FN = [
 
 IGNORE_SAVE_LOAD_VARS = [
     "cs",
-    "cs_meta",
+    "meta",
     "dev",
     "cost_predictor",
     "perf_predictor",
@@ -354,9 +354,9 @@ class QuickOptimizer(BaseOptimizer):
         for key in IGNORE_SAVE_LOAD_VARS:
             ckp.pop(key)
 
-        self.cs.to_yaml(path / "cs.yaml")
+        self.cs.to_json(path / "cs.json")
         if self.meta is not None:
-            self.meta.to_yaml(path / "meta.yaml")
+            self.meta.to_json(path / "meta.json")
 
         self.perf_predictor.save(path)
         if self.cost_predictor is not None:
@@ -372,10 +372,10 @@ class QuickOptimizer(BaseOptimizer):
         assert path.exists(), f"Path {path} does not exist"
 
         # load configspace(s)
-        cs = ConfigurationSpace.from_yaml(path / "cs.yaml")
+        cs = ConfigurationSpace.from_json(path / "cs.json")
         cs_meta = None
-        if (path / "meta.yaml").exists():
-            cs_meta = ConfigurationSpace.from_yaml(path / "meta.yaml")
+        if (path / "meta.json").exists():
+            cs_meta = ConfigurationSpace.from_json(path / "meta.json")
 
         # create instance
         opt = cls(cs, cs_meta)

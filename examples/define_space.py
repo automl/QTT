@@ -59,12 +59,12 @@ dr = OrdinalHyperparameter("decay_rate", [0.1, 0.5], meta=_meta)
 de = OrdinalHyperparameter("decay_epochs", [10, 20], meta=_meta)
 da = Categorical(
     "data_augmentation",
-    ["none", "auto_augment", "random_augment", "trivial_augment"],
+    ["auto_augment", "random_augment", "trivial_augment"],
     meta=_meta,
 )
 aa = Categorical("auto_augment", ["v0", "original"], meta=_meta)
-ra_nops = Integer("ra_num_ops", (2, 3), meta=_meta)
-ra_mag = Integer("ra_magnitude", (5, 10), meta=_meta)
+ra_nops = OrdinalHyperparameter("ra_num_ops", [2, 3], meta=_meta)
+ra_mag = OrdinalHyperparameter("ra_magnitude", [9, 17], meta=_meta)
 cond_1 = EqualsCondition(pe, sched, "plateau")
 cond_2 = OrConjunction(
     EqualsCondition(dr, sched, "step"),
@@ -163,7 +163,7 @@ cs.add(model)
 b = Constant("max_fidelity", 50)
 cs.add(b)
 
-cs.to_yaml("space.yaml", indent=2)
+cs.to_json("space.json", indent=2)
 
 
 ########################################################################################
@@ -178,4 +178,4 @@ num_channels = Integer("num_channels", (1, 3))
 
 metafeat.add(num_classes, num_features, num_samples, num_channels)
 
-metafeat.to_yaml("meta.yaml", indent=2)
+metafeat.to_json("meta.json", indent=2)

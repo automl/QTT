@@ -25,7 +25,7 @@ class MetaDataset(Dataset):
         self.standardize = standardize
         self.to_tensor = to_tensor
 
-        self.cs = ConfigurationSpace.from_yaml(self.root / "space.yaml")
+        self.cs = ConfigurationSpace.from_json(self.root / "space.json")
         self.config = self._load_csv(self.root / "config.csv")
         self.curve = self._load_csv(self.root / "curve.csv")
 
