@@ -41,7 +41,7 @@ def extract_task_info_metafeat(
     }
 
     task_info = {
-        "data-path": root,
+        "data-path": str(root),
         "train-split": train_split,
         "val-split": val_split,
         "num-classes": num_classes,

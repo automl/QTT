@@ -74,6 +74,7 @@ class DyHPO(Predictor, torch.nn.Module):
 
     @torch.no_grad()
     def predict(self, data: dict[str, torch.Tensor]):
+        self.eval()
         enc = self.encoder(**data)
         output = self.gp_model(enc)
         return self.likelihood(output)

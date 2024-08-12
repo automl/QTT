@@ -131,8 +131,8 @@ class QuickOptimizer(BaseOptimizer):
         df.fillna(0, inplace=True)
 
         if self.config_norm is not None:
-            mean = self.config_norm.iloc("mean")
-            std = self.config_norm.iloc("std")
+            mean = self.config_norm.loc["mean"]
+            std = self.config_norm.loc["std"]
             df = (df - mean) / std
 
         df = df[self.cs_encoding]  # assert columns order
@@ -184,6 +184,7 @@ class QuickOptimizer(BaseOptimizer):
         metafeat = None
         if self.metafeat is not None:
             metafeat = torch.tensor(self.metafeat, dtype=torch.float, device=self.dev)
+            metafeat = metafeat.unsqueeze(0).repeat(config.size(0), 1)
 
         data = {
             "config": config,
@@ -196,11 +197,13 @@ class QuickOptimizer(BaseOptimizer):
     def _get_candidate_data(self):
         config = torch.tensor(self.configs, dtype=torch.float, device=self.dev)
         fidelity = torch.tensor(self.fidelities, dtype=torch.float, device=self.dev)
+        fidelity += 1
         fidelity /= self.max_fidelity
         curve = torch.tensor(self.curves, dtype=torch.float, device=self.dev)
         metafeat = None
         if self.metafeat is not None:
             metafeat = torch.tensor(self.metafeat, dtype=torch.float, device=self.dev)
+            metafeat = metafeat.unsqueeze(0).repeat(config.size(0), 1)
 
         data = {
             "config": config,
@@ -214,7 +217,7 @@ class QuickOptimizer(BaseOptimizer):
         test_data = self._get_candidate_data()
 
         pred = self.perf_predictor.predict(test_data)  # type: ignore
-        pred_mean, pred_std = pred.mean.cpu().numpy(), pred.stddev.cpu().numpy()
+        pred_mean, pred_std = pred.mean.detach().cpu().numpy(), pred.stddev.detach().cpu().numpy()
 
         cost = self.costs
         if self.cost_predictor is not None:
