@@ -30,13 +30,22 @@ pip install -e QTT
 With this repo, we provide pretrained models for quick testing. 
 
 ```python
-from qtt.factory import get_opt
-from qtt.tuners import QuickTuner
-from qtt.finetune.cv.image_classification import finetune_script
+from qtt import QuickTuner, get_pretrained_optimizer
+from qtt.finetune.cv.classification import finetune_script, extract_task_info_metafeat
 
-opt, cm = get_opt("mtlbm/micro", pretrained=True)
-qt = QuickTuner(opt, cm, finetune_script)
-qt.fit(data_path="path/to/dataset", time_limit=3600)
+# specify the path to the dataset here
+# it will extract the meta-features and create two dictionaries for the optimizer and tuner/finetune_script
+task_info, metafeat = extract_task_info_metafeat("path/to/dataset")
+
+# load a pretrained optimizer
+optimizer = get_pretrained_optimizer("mtlbm/micro")
+# setup the optimizer
+n = 100  # number of configs to sample
+optimizer.setup(n, metafeat)
+
+# setup and run the tuner
+qt = QuickTuner(optimizer, finetune_script)  # pass the optimizer and objective function
+qt.run(task_info=task_info, time_budget=3600)  # run for 1 hour
 ```
 
 The custom dataset must be in Pytorch's [ImageFolder](https://pytorch.org/vision/main/generated/torchvision.datasets.ImageFolder.html) format, e.g. download the Imagenette dataset:
