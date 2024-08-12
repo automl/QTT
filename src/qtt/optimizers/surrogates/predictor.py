@@ -4,6 +4,10 @@ from pathlib import Path
 
 class Predictor(abc.ABC):
     @abc.abstractmethod
+    def predict():
+        raise NotImplementedError
+
+    @abc.abstractmethod
     def fit(self, *args, **kwargs):
         raise NotImplementedError
 

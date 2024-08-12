@@ -52,6 +52,9 @@ class CostPredictor(Predictor, torch.nn.Module):
 
         self.head = MLP(enc_dims, 1, enc_nlayers, enc_hidden_dim, act_fn=nn.GELU)
 
+    def predict(self, config, metafeat=None, **kwarg):
+        return self(config, metafeat)
+
     def forward(self, config, metafeat=None, **kwargs):
         # encode config
         x = []

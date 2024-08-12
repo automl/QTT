@@ -221,7 +221,7 @@ class QuickOptimizer(BaseOptimizer):
 
         cost = self.costs
         if self.cost_predictor is not None:
-            pred_cost = self.cost_predictor(**test_data)
+            pred_cost = self.cost_predictor.predict(**test_data)
             pred_cost = pred_cost.cpu().numpy()
             mask = np.isnan(cost)
             cost[mask] = pred_cost[mask]
