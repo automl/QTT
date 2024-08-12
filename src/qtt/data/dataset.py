@@ -26,6 +26,10 @@ class MetaDataset(Dataset):
         self.to_tensor = to_tensor
 
         self.cs = ConfigurationSpace.from_json(self.root / "space.json")
+        self.meta = None
+        if (self.root / "meta.json").exists():
+            self.meta = ConfigurationSpace.from_json(self.root / "meta.json")
+
         self.config = self._load_csv(self.root / "config.csv")
         self.curve = self._load_csv(self.root / "curve.csv")
 
@@ -97,6 +101,9 @@ class MetaDataset(Dataset):
             out = {k: torch.tensor(v, dtype=torch.float) for k, v in out.items()}
 
         return out
+    
+    def get_space(self):
+        return self.cs, self.meta
 
     def get_config_norm(self):
         return self.config_norm

@@ -16,7 +16,7 @@ from .utils import MetricLogger
 logger = logging.getLogger(__name__)
 
 
-class CostPredictor(Predictor):
+class CostPredictor(Predictor, torch.nn.Module):
     def __init__(
         self,
         in_dim: int | list[int],

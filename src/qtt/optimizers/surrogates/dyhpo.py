@@ -33,7 +33,7 @@ class GPRegressionModel(gpytorch.models.ExactGP):
         return gpytorch.distributions.MultivariateNormal(mean, covar)  # type: ignore
 
 
-class DyHPO(Predictor):
+class DyHPO(Predictor, torch.nn.Module):
     def __init__(
         self,
         in_dim: int | list[int],

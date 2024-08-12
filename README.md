@@ -60,7 +60,7 @@ Modify the quicktuning [script](examples/quicktuning.py) in the examples folder 
 ## Advanced Usage
 ### Download the QuickTune Meta-Album-Dataset:
 ```bash
-wget https://nc.informatik.uni-freiburg.de/index.php/s/K5gbJ72nNz873Ct/download/mtlbm.zip
+wget https://nextcloud.tf.uni-freiburg.de/index.php/s/7xMKQsiEGE3je5R/download/mtlbm.zip
 unzip mtlbm.zip
 ```
 
