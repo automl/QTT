@@ -1,7 +1,7 @@
 import logging
 import pickle
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 import numpy as np
 import pandas as pd
@@ -12,17 +12,9 @@ from scipy.stats import norm
 from ..data import MetaDataset
 from ..utils import encode_config_space, fix_random_seeds, set_logger_verbosity
 from .optimizer import BaseOptimizer
-from .surrogates import CostPredictor, DyHPO, Predictor
+from ..predictors import CostPredictor, DyHPO, Predictor
 
 logger = logging.getLogger(__name__)
-
-
-ACQ_FN = [
-    "ei",
-    "ucb",
-    "thompson",
-    "exploit",
-]
 
 IGNORE_SAVE_LOAD_VARS = [
     "cs",
@@ -39,13 +31,13 @@ class QuickOptimizer(BaseOptimizer):
         cs: ConfigurationSpace,
         meta: ConfigurationSpace | None = None,
         *,
-        init_steps: int = 10,
         cost_aware: bool = False,
-        acq_fn: str = "ei",
+        acq_fn: Literal["ei", "ucb", "thompson", "exploit"] = "ei",
         explore_factor: float = 0.0,
         n_iter_no_change: int | None = None,
         tol: float = 1e-4,
         score_thresh: float = 0.0,
+        init_random_search_steps: int = 10,
         #
         device: str | None = None,
         seed: int | None = None,
@@ -81,7 +73,6 @@ class QuickOptimizer(BaseOptimizer):
         self.metafeat_norm: pd.DataFrame | None = None
 
         # optimizer related parameters
-        assert acq_fn in ACQ_FN, f"invalid acq-fn: {acq_fn}, choose from {ACQ_FN}"
         self.acq_fn = acq_fn
         self.explore_factor = explore_factor
         self.cost_aware = cost_aware
@@ -100,7 +91,7 @@ class QuickOptimizer(BaseOptimizer):
         self.model_kwargs = model_kwargs
 
         # trackers
-        self.init_steps = init_steps
+        self.init_random_search_steps = init_random_search_steps
         self.iteration = 0
         self.ask_count = 0
         self.tell_count = 0
@@ -127,7 +118,7 @@ class QuickOptimizer(BaseOptimizer):
         return kwargs
 
     def _config_to_vector(self, configs: list[Configuration]) -> np.ndarray:
-        df =pd.DataFrame(configs, columns=self.cs_encoding)
+        df = pd.DataFrame(configs, columns=self.cs_encoding)
         df.fillna(0, inplace=True)
 
         if self.config_norm is not None:
@@ -160,15 +151,14 @@ class QuickOptimizer(BaseOptimizer):
         elif self.cs_meta_enc is None and metafeat is not None:
             logger.warning("metafeatures given but not used in this optimization")
         elif self.cs_meta_enc is not None and metafeat is not None:
-            _meta = [v for k, v in metafeat.items() if k in self.cs_meta_enc]
-            _meta = np.array(_meta)
+            _meta = {k: v for k, v in metafeat.items() if k in self.cs_meta_enc}
+            _meta = pd.DataFrame(_meta, index=[0])
 
             if self.metafeat_norm is not None:
                 mean = self.metafeat_norm.loc["mean"]
                 std = self.metafeat_norm.loc["std"]
-                std[std == 0] = 1
                 _meta = (_meta - mean) / std
-                self.metafeat = _meta
+                self.metafeat = _meta.to_numpy(dtype=float)
 
         self._setup_run = True
 
@@ -203,7 +193,7 @@ class QuickOptimizer(BaseOptimizer):
         metafeat = None
         if self.metafeat is not None:
             metafeat = torch.tensor(self.metafeat, dtype=torch.float, device=self.dev)
-            metafeat = metafeat.unsqueeze(0).repeat(config.size(0), 1)
+            metafeat = metafeat.repeat(config.size(0), 1)
 
         data = {
             "config": config,
@@ -217,15 +207,17 @@ class QuickOptimizer(BaseOptimizer):
         test_data = self._get_candidate_data()
 
         pred = self.perf_predictor.predict(test_data)  # type: ignore
-        pred_mean, pred_std = pred.mean.detach().cpu().numpy(), pred.stddev.detach().cpu().numpy()
+        pred_mean, pred_std = (
+            pred.mean.detach().cpu().numpy(),
+            pred.stddev.detach().cpu().numpy(),
+        )
 
         cost = self.costs
         if self.cost_predictor is not None:
             pred_cost = self.cost_predictor.predict(**test_data)
-            pred_cost = pred_cost.cpu().numpy()
             mask = np.isnan(cost)
             cost[mask] = pred_cost[mask]
-
+            
         return pred_mean, pred_std, cost
 
     def _calc_acq_val(self, mean, std, y_max):
@@ -278,7 +270,7 @@ class QuickOptimizer(BaseOptimizer):
             raise RuntimeError("Call setup() before ask()")
 
         self.ask_count += 1
-        if len(self.evaled) < self.init_steps:
+        if len(self.evaled) < self.init_random_search_steps:
             left = set(range(self.N)) - self.evaled - self.failed - self.stoped
             index = left.pop()
             fidelity = 1
@@ -328,7 +320,8 @@ class QuickOptimizer(BaseOptimizer):
             self._score_history[index][fidelity % self.n_iter_no_change] = score
 
     def ante(self):
-        pass
+        if len(self.evaled) >= self.init_random_search_steps:
+            self.update()
 
     def post(self):
         pass
@@ -336,8 +329,6 @@ class QuickOptimizer(BaseOptimizer):
     def update(self):
         train_data = self._get_history_data()
         self.perf_predictor.update(train_data)
-        # if self.cost_predictor is not None:
-        #     self.cost_predictor.update(train_data)
 
     def fit(self, data: MetaDataset, **kwargs):
         # fit the predictors
@@ -367,7 +358,7 @@ class QuickOptimizer(BaseOptimizer):
 
         # torch.save(ckp, path / "checkpoint.pth")
         with open(path / "quick.pkl", "wb") as f:
-            pickle.dump(ckp, f)
+            pickle.dump(ckp, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     @classmethod
     def load(cls, path: str | Path):
@@ -394,4 +385,11 @@ class QuickOptimizer(BaseOptimizer):
                 setattr(opt, key, checkpoint.get(key, value))
             else:
                 logger.info(f"'{key}' not in checkpoint")
+
+        # load predictors
+        opt.perf_predictor.load(path)
+        if opt.cost_predictor is not None:
+            assert (path / "cost_predictor").exists(), "cost_predictor not found"
+            opt.cost_predictor.load(path)
+
         return opt

@@ -64,12 +64,24 @@ wget https://nextcloud.tf.uni-freiburg.de/index.php/s/7xMKQsiEGE3je5R/download/m
 unzip mtlbm.zip
 ```
 
-And modify the meta-training [script](examples/create_surrogate.py) in the examples folder to your needs.
+And modify the meta-training [script](examples/metatrain.py) in the examples folder to your needs.
+
+## References
+
+The concepts and methodologies of this project are discussed in the following workshop paper:
+
+**Title**: *Quick-Tune-Tool: A Practical Tool and its User Guide for Automatically Finetuning Pretrained Models*  
+
+**Authors**: Ivo Rapant, Lennart Purucker, Fabio Ferreira, Sebastian Pineda Arango, Arlind Kadra, Josif Grabocka, Frank Hutter
+
+**Conference**: AutoML 2024 Workshop
+
+You can access the full paper and additional details on OpenReview [here](https://openreview.net/forum?id=d0Hapti3Uc).
 
 
-### Cite us
+### Further References / Citations
 
-If you use this repository, please cite us as:
+This project is based on the following paper. Please also consider citing this paper:
 ```
 @inproceedings{
 arango2024quicktune,

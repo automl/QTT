@@ -52,8 +52,10 @@ class CostPredictor(Predictor, torch.nn.Module):
 
         self.head = MLP(enc_dims, 1, enc_nlayers, enc_hidden_dim, act_fn=nn.GELU)
 
+    @torch.no_grad()
     def predict(self, config, metafeat=None, **kwarg):
-        return self(config, metafeat)
+        self.eval()
+        return self(config, metafeat).detach().cpu().numpy().squeeze()
 
     def forward(self, config, metafeat=None, **kwargs):
         # encode config
@@ -81,7 +83,6 @@ class CostPredictor(Predictor, torch.nn.Module):
         lr: float = 1e-3,
         train_steps: int = 10_000,
         val_freq: int = 100,
-        val_steps: int = 1000,
         use_scheduler: bool = False,
         test_size: float = 0.2,
         seed: int | None = None,
@@ -110,7 +111,6 @@ class CostPredictor(Predictor, torch.nn.Module):
         lr: float = 1e-4,
         train_steps: int = 100,
         val_freq: int = 10,
-        val_steps: int = 100,
         use_scheduler: bool = False,
         test_size: float = 0.2,
         seed: int | None = None,

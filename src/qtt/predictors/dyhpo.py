@@ -9,7 +9,7 @@ from torch.utils.data import Dataset, StackDataset, random_split, DataLoader
 
 from qtt.data.utils import IterLoader, dict_collate, dict_tensor_to_device
 
-from .encoder import FeatureEncoder
+from .models import FeatureEncoder
 from .predictor import Predictor
 from .utils import MetricLogger
 
@@ -34,6 +34,23 @@ class GPRegressionModel(gpytorch.models.ExactGP):
 
 
 class DyHPO(Predictor, torch.nn.Module):
+    """
+    DyHPO  is a predictor model that combines a feature encoder and a Gaussian Process
+    to perform multi-fidelity hyperparameter optimization.
+
+    Args:
+        in_dim (int | list[int]): The input dimension or a list of input dimensions.
+        out_dim (int, optional): The output dimension. Defaults to 32.
+        enc_hidden_dim (int, optional): The hidden dimension of the feature encoder. Defaults to 128.
+        enc_out_dim (int, optional): The output dimension of the feature encoder. Defaults to 32.
+        enc_nlayers (int, optional): The number of layers in the feature encoder. Defaults to 3.
+        in_curve_dim (int, optional): The input dimension of the learning curve. Defaults to 50.
+        out_curve_dim (int, optional): The output dimension of the learning curve. Defaults to 16.
+        curve_channels (int, optional): The number of channels in the learning curve. Defaults to 1.
+        in_metafeat_dim (int | None, optional): The input dimension of the meta-features. Defaults to None.
+        out_metafeat_dim (int, optional): The output dimension of the meta-features. Defaults to 16.
+    """
+
     def __init__(
         self,
         in_dim: int | list[int],
@@ -93,26 +110,38 @@ class DyHPO(Predictor, torch.nn.Module):
         lr: float = 1e-3,
         train_steps: int = 10_000,
         val_freq: int = 100,
-        val_steps: int = 256,
         use_scheduler: bool = True,
         test_size: float = 0.2,
         seed: int | None = None,
         cache_dir: str = "~/.cache/qtt/dyhpo",
-        ckpt_name: str = "dyhpo.pth",
         log_freq: int = 10,
     ):
+        """
+        Fits the model to the given dataset.
+        Args:
+            dataset (Dataset): The dataset to train the model on.
+            bs (int, optional): The batch size for training. Defaults to 128.
+            lr (float, optional): The learning rate for training. Defaults to 1e-3.
+            train_steps (int, optional): The number of training steps. Defaults to 10_000.
+            val_freq (int, optional): The frequency of validation. Defaults to 100.
+            use_scheduler (bool, optional): Whether to use a learning rate scheduler. Defaults to True.
+            test_size (float, optional): The size of the test set. Defaults to 0.2.
+            seed (int | None, optional): The random seed for reproducibility. Defaults to None.
+            cache_dir (str, optional): The directory to cache data. Defaults to "~/.cache/qtt/dyhpo".
+            log_freq (int, optional): The frequency of logging. Defaults to 10.
+        Returns:
+            The fitted model.
+        """
         return self._fit(
             dataset,
             bs,
             lr,
             train_steps,
             val_freq,
-            val_steps,
             use_scheduler,
             test_size,
             seed,
             cache_dir,
-            ckpt_name,
             log_freq,
         )
 
@@ -123,14 +152,28 @@ class DyHPO(Predictor, torch.nn.Module):
         lr: float = 1e-4,
         train_steps: int = 100,
         val_freq: int = 10,
-        val_steps: int = 100,
         use_scheduler: bool = False,
         test_size: float = 0.2,
         seed: int | None = None,
         cache_dir: str = "~/.cache/qtt/dyhpo",
-        ckpt_name: str = "dyhpo.pth",
         log_freq: int = 10,
     ):
+        """
+        Updates the model with new data.
+        Args:
+            dataset (Dataset): The dataset to train the model on.
+            bs (int, optional): The batch size for training. Defaults to 128.
+            lr (float, optional): The learning rate for training. Defaults to 1e-3.
+            train_steps (int, optional): The number of training steps. Defaults to 10_000.
+            val_freq (int, optional): The frequency of validation. Defaults to 100.
+            use_scheduler (bool, optional): Whether to use a learning rate scheduler. Defaults to True.
+            test_size (float, optional): The size of the test set. Defaults to 0.2.
+            seed (int | None, optional): The random seed for reproducibility. Defaults to None.
+            cache_dir (str, optional): The directory to cache data. Defaults to "~/.cache/qtt/dyhpo".
+            log_freq (int, optional): The frequency of logging. Defaults to 10.
+        Returns:
+            The updated model.
+        """
         if isinstance(dataset, dict):
             dataset = StackDataset(**dataset)
 
@@ -140,12 +183,10 @@ class DyHPO(Predictor, torch.nn.Module):
             lr,
             train_steps,
             val_freq,
-            val_steps,
             use_scheduler,
             test_size,
             seed,
             cache_dir,
-            ckpt_name,
             log_freq,
         )
 
@@ -156,18 +197,15 @@ class DyHPO(Predictor, torch.nn.Module):
         lr: float,
         train_steps: int,
         val_freq: int,
-        val_steps: int,
         use_scheduler: bool,
         test_size: float,
         seed: int | None,
         cache_dir: str,
-        ckpt_name: str,
         log_freq: int,
     ):
         # ============ setup cache dir and device ... ============
         cache_dir = os.path.expanduser(cache_dir)
         os.makedirs(cache_dir, exist_ok=True)
-        save_path = os.path.join(cache_dir, ckpt_name)
 
         dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(dev)
@@ -202,7 +240,7 @@ class DyHPO(Predictor, torch.nn.Module):
 
         # ============ training ... ============
         # when doing update, save the model before training
-        torch.save(self.state_dict(), save_path)
+        self.save(cache_dir)
         min_error = self.__validate(dev, val_loader)
         print(f"Initial validation error: {min_error:.3f}")
         self.train()
@@ -234,12 +272,12 @@ class DyHPO(Predictor, torch.nn.Module):
                 print(f"VAL [{it}] val-error: {val_error:.3f}")
                 if val_error < min_error:
                     min_error = val_error
-                    torch.save(self.state_dict(), save_path)
+                    self.save(cache_dir)
                 self.train()
 
         # Load the model with the best validation error
         print(f"Loading the model with the best validation error: {min_error:.3f}")
-        self.load_state_dict(torch.load(save_path))
+        self.load(cache_dir)
         return self
 
     def __validate(self, dev, val_loader):
@@ -310,7 +348,7 @@ class DyHPO(Predictor, torch.nn.Module):
         # set the curve values at the fidelity and after to 0
         row_indices = torch.arange(N, device=curve.device).unsqueeze(0)
         indices = fidelity.unsqueeze(1) - 2
-        mask = (row_indices > indices.expand_as(curve))
+        mask = row_indices > indices.expand_as(curve)
         curve[mask] = 0
 
         train = {
@@ -327,6 +365,6 @@ class DyHPO(Predictor, torch.nn.Module):
 
     def load(self, path: str | Path, name: str = "dyhpo.pth"):
         path = Path(path)
-        ckp = torch.load(path / name)
+        ckp = torch.load(path / name, map_location="cpu")
         self.load_state_dict(ckp)
         return self
