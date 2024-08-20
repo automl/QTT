@@ -210,6 +210,7 @@ class DyHPO(Predictor, torch.nn.Module):
         dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(dev)
 
+
         # ============ preparing data ... ============
         generator = torch.Generator().manual_seed(seed) if seed is not None else None
         trainset, valset = random_split(
@@ -219,7 +220,7 @@ class DyHPO(Predictor, torch.nn.Module):
         )
         train_loader = IterLoader(
             dataset=trainset,
-            batch_size=bs,
+            batch_size=min(bs, len(trainset)),
             shuffle=True,
             drop_last=True,
             collate_fn=dict_collate,
@@ -227,7 +228,7 @@ class DyHPO(Predictor, torch.nn.Module):
         )
         val_loader = DataLoader(
             dataset=valset,
-            batch_size=bs,
+            batch_size=min(bs, len(valset)),
             collate_fn=dict_collate,
             # steps=val_steps,
         )
@@ -269,7 +270,7 @@ class DyHPO(Predictor, torch.nn.Module):
             # validation
             if not it % val_freq:
                 val_error = self.__validate(dev, val_loader)
-                print(f"VAL [{it}] val-error: {val_error:.3f}")
+                logger.debug(f"VAL [{it}] val-error: {val_error:.3f}")
                 if val_error < min_error:
                     min_error = val_error
                     self.save(cache_dir)
@@ -280,6 +281,7 @@ class DyHPO(Predictor, torch.nn.Module):
         self.load(cache_dir)
         return self
 
+    @torch.no_grad()
     def __validate(self, dev, val_loader):
         self.eval()
         val_loss = []
@@ -330,7 +332,7 @@ class DyHPO(Predictor, torch.nn.Module):
 
         # not all learning curves are fully evaluated
         max_fidelity = (curve != 0).sum(dim=1).reshape(-1, 1)
-        samples = torch.arange(1, N, N // NS, device=config.device).reshape(1, -1)
+        samples = torch.arange(0, N, N // NS, device=config.device).reshape(1, -1)
         fidelity = torch.min(max_fidelity, samples)
         mask = (fidelity < max_fidelity).reshape(-1)
 

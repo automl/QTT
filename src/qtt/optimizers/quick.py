@@ -174,7 +174,7 @@ class QuickOptimizer(BaseOptimizer):
         metafeat = None
         if self.metafeat is not None:
             metafeat = torch.tensor(self.metafeat, dtype=torch.float, device=self.dev)
-            metafeat = metafeat.unsqueeze(0).repeat(config.size(0), 1)
+            metafeat = metafeat.repeat(config.size(0), 1)
 
         data = {
             "config": config,
