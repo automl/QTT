@@ -271,6 +271,7 @@ class DyHPO(Predictor, torch.nn.Module):
             if not it % val_freq:
                 val_error = self.__validate(dev, val_loader)
                 logger.debug(f"VAL [{it}] val-error: {val_error:.3f}")
+                print(f"VAL [{it}] val-error: {val_error:.3f}")
                 if val_error < min_error:
                     min_error = val_error
                     self.save(cache_dir)
@@ -324,7 +325,7 @@ class DyHPO(Predictor, torch.nn.Module):
         Similar as __generate_batch but without randomness.
         Validating the model on fixed NS values over the learning curve.
         """
-        NS = 10  # number of samples
+        # NS = 10  # number of samples
         config = data["config"]
         curve = data["curve"]
         metafeat = data.get("metafeat")
@@ -332,15 +333,15 @@ class DyHPO(Predictor, torch.nn.Module):
 
         # not all learning curves are fully evaluated
         max_fidelity = (curve != 0).sum(dim=1).reshape(-1, 1)
-        samples = torch.arange(0, N, N // NS, device=config.device).reshape(1, -1)
+        samples = torch.arange(N, device=config.device).reshape(1, -1)
         fidelity = torch.min(max_fidelity, samples)
         mask = (fidelity < max_fidelity).reshape(-1)
 
-        config = config.repeat_interleave(NS, 0)[mask]
-        curve = curve.repeat_interleave(NS, 0)[mask]
+        config = config.repeat_interleave(N, 0)[mask]
+        curve = curve.repeat_interleave(N, 0)[mask]
         fidelity = fidelity.reshape(-1)[mask]
         if metafeat is not None:
-            metafeat = metafeat.repeat_interleave(NS, 0)
+            metafeat = metafeat.repeat_interleave(N, 0)
             metafeat = metafeat[mask]
 
         # target is the score at the fidelity
