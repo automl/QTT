@@ -1,6 +1,8 @@
 import logging
 from typing import Optional
 
+# _logger_ = logging.getLogger("qtt")
+
 
 def verbosity2loglevel(verbosity):
     """Translates verbosity to logging level. Suppresses warnings if verbosity = 0."""
@@ -56,6 +58,13 @@ def add_log_to_file(
     fh.setFormatter(formatter)
     logger.addHandler(fh)
 
+# def _add_stream_handler():
+#     if not any(isinstance(h, logging.StreamHandler) for h in _logger_.handlers):
+#         stream_handler = logging.StreamHandler()
+#         formatter = logging.Formatter("%(message)s")
+#         stream_handler.setFormatter(formatter)
+#         _logger_.addHandler(stream_handler)
+#         _logger_.propagate = False
 
 def setup_default_logging(
     default_level=logging.WARN,
@@ -63,7 +72,7 @@ def setup_default_logging(
     datefmt: Optional[str] = None,
 ):
     if fmt is None:
-        fmt = "%(asctime)s - %(name)16s: [%(levelname)s] %(message)s"
+        fmt = "%(asctime)s - %(name)s: [%(levelname)s] %(message)s"
     if datefmt is None:
         datefmt = "%y.%m.%d %H:%M:%S"
     logging.basicConfig(format=fmt, datefmt=datefmt, level=default_level)

@@ -1,19 +1,685 @@
 import logging
 import os
-from pathlib import Path
+import random
 
 import gpytorch
+import numpy as np
+import pandas as pd
+import psutil
 import torch
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import Dataset, StackDataset, random_split, DataLoader
+from torch.utils.data import DataLoader, random_split
 
-from qtt.data.utils import IterLoader, dict_collate, dict_tensor_to_device
+from qtt.predictors.models import FeatureEncoder
+from qtt.utils.log_utils import set_logger_verbosity
 
-from .models import FeatureEncoder
-from .predictor import Predictor
-from .utils import MetricLogger
+from .abstract import AbstractPredictor
+from .data import (
+    CurveRegressionDataset,
+    create_preprocessor,
+    get_feature_mapping,
+)
+from .utils import MetricLogger, get_torch_device
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_FIT_PARAMS = {
+    "learning_rate_init": 0.001,
+    "batch_size": 2048,
+    "max_iter": 100,
+    "early_stop": True,
+    "patience": 5,
+    "validation_fraction": 0.1,
+    "tol": 1e-4,
+}
+
+DEFAULT_REFIT_PARAMS = {
+    "learning_rate_init": 0.001,
+    "min_batch_size": 512,
+    "max_batch_size": 2048,
+    "max_iter": 50,
+    "early_stop": True,
+    "patience": 5,
+    "validation_fraction": 0.1,
+    "tol": 1e-4,
+}
+
+
+class DyHPO(AbstractPredictor):
+    temp_file_name: str = "temp_model.pt"
+    _max_train_data_size: int = 4096
+    _fit_data = None
+
+    def __init__(
+        self,
+        fit_params: dict = {},
+        refit_params: dict = {},
+        path: str | None = None,
+        seed: int | None = None,
+        verbosity: int = 2,
+    ) -> None:
+        super().__init__(path=path)
+
+        self.fit_params = self._validate_fit_params(fit_params, DEFAULT_FIT_PARAMS)
+        self.refit_params = self._validate_fit_params(
+            refit_params, DEFAULT_REFIT_PARAMS
+        )
+        self.seed = seed
+        self.verbosity = verbosity
+
+        set_logger_verbosity(verbosity, logger)
+
+    @staticmethod
+    def _validate_fit_params(fit_params, default_params):
+        if not isinstance(fit_params, dict):
+            raise ValueError("fit_params must be a dictionary")
+        for key in fit_params:
+            if key not in default_params:
+                raise ValueError(f"Unknown fit parameter: {key}")
+        return {**default_params, **fit_params}
+
+    def _get_types_of_features(self, df):
+        continous_features = list(df.select_dtypes(include=["number"]).columns)
+        categorical_features = list(df.select_dtypes(include=["object"]).columns)
+        bool_features = list(df.select_dtypes(include=["bool"]).columns)
+        valid_features = continous_features + categorical_features + bool_features
+
+        if len(valid_features) != df.shape[1]:
+            unknown_features = [col for col in df.columns if col not in valid_features]
+            logger.warning(
+                f"Features {unknown_features} have unknown dtypes and are dropped"
+            )
+            df = df.drop(columns=unknown_features)
+
+        features_to_drop = df.columns[df.isna().all()].tolist()
+        if features_to_drop:
+            logger.warning(
+                f"Features {features_to_drop} have only NaN values and are dropped"
+            )
+            df = df.drop(columns=features_to_drop)
+
+        types_of_features = {"continuous": [], "categorical": [], "bool": []}
+        for col in df.columns:
+            if col in continous_features:
+                types_of_features["continuous"].append(col)
+            elif col in categorical_features:
+                types_of_features["categorical"].append(col)
+            elif col in bool_features:
+                types_of_features["bool"].append(col)
+        return types_of_features, df
+
+    def _validate_fit_data(self, pipeline, curve):
+        if not isinstance(pipeline, pd.DataFrame):
+            raise ValueError("pipeline must be a pandas.DataFrame instance")
+
+        if not isinstance(curve, np.ndarray):
+            raise ValueError("curve must be a numpy.ndarray instance")
+
+        if pipeline.shape[0] != curve.shape[0]:
+            raise ValueError("pipeline and curve must have the same number of samples")
+
+        if len(set(pipeline.columns)) < len(pipeline.columns):
+            raise ValueError(
+                "Column names are not unique, please change duplicated column names (in pandas: train_data.rename(columns={'current_name':'new_name'})"
+            )
+
+        self._curve_dim = curve.shape[1]
+
+    def _preprocess_fit_data(self, df: pd.DataFrame):
+        """
+        Process data for fitting the model.
+        """
+        self._original_features = list(df.columns)
+        drop_columns = [col for col in df.columns if df[col].nunique() == 1]
+        if len(drop_columns) > 0:
+            logger.warning(
+                f"Columns {drop_columns} have only one unique value and are ignored"
+            )
+            df.drop(columns=drop_columns, inplace=True)
+        self._drop_features = drop_columns
+
+        self.types_of_features, df = self._get_types_of_features(df)
+        self._input_features = list(df.columns)
+        continous_features = self.types_of_features["continuous"]
+        categorical_features = self.types_of_features["categorical"]
+        bool_features = self.types_of_features["bool"]
+        self.preprocessor = create_preprocessor(
+            continous_features,
+            categorical_features,
+            bool_features,
+        )
+        out = self.preprocessor.fit_transform(df)
+        self._feature_mapping = get_feature_mapping(self.preprocessor)
+        if out.shape[1] != sum(len(v) for v in self._feature_mapping.values()):
+            raise ValueError(
+                "Error during one-hot encoding data processing for neural network. "
+                "Number of columns in df array does not match feature_mapping."
+            )
+        return np.array(out)
+
+    def _validate_predict_data(self, pipeline, curve):
+        if not isinstance(pipeline, pd.DataFrame) or not isinstance(curve, np.ndarray):
+            raise ValueError("pipeline and curve must be pandas.DataFrame instances")
+
+        if pipeline.shape[0] != curve.shape[0]:
+            raise ValueError("pipeline and curve must have the same number of samples")
+
+        if len(set(pipeline.columns)) < len(pipeline.columns):
+            raise ValueError(
+                "Column names are not unique, please change duplicated column names (in pandas: train_data.rename(columns={'current_name':'new_name'})"
+            )
+
+        if curve.shape[1] != self._curve_dim:
+            raise ValueError(
+                "curve must have the same number of features as the curve used for fitting"
+                " (expected: {self._curve_length}, got: {curve.shape[1]})"
+            )
+
+    def _preprocess_predict_data(self, df: pd.DataFrame, fill_missing=True):
+        unexpected_columns = set(df.columns) - set(self._original_features)
+        if len(unexpected_columns) > 0:
+            logger.warning(
+                "Data contains columns that were not present during fitting: "
+                f"{unexpected_columns}"
+            )
+
+        df = df.drop(columns=self._drop_features, errors="ignore")
+
+        missing_columns = set(self._input_features) - set(df.columns)
+        if len(missing_columns) > 0:
+            if fill_missing:
+                logger.warning(
+                    "Data is missing columns that were present during fitting: "
+                    f"{missing_columns}. Trying to fill them with mean values / zeros."
+                )
+                for col in missing_columns:
+                    df[col] = None
+            else:
+                raise AssertionError(
+                    "Data is missing columns that were present during fitting: "
+                    f"{missing_columns}. Please fill them with appropriate values."
+                )
+
+        # process data
+        X = self.preprocessor.transform(df)
+        X = np.array(X)
+        X = np.nan_to_num(X)
+        return X
+
+    def _get_model(self):
+        params = {
+            "in_dim": [
+                len(self.types_of_features["continuous"]),
+                len(self.types_of_features["categorical"])
+                + len(self.types_of_features["bool"]),
+            ],
+            "in_curve_dim": self._curve_dim,
+        }
+        return SurrogateModel(**params)
+
+    def _train_model(
+        self,
+        dataset,
+        learning_rate_init,
+        batch_size,
+        max_iter,
+        early_stop,
+        patience,
+        validation_fraction,
+        tol,
+    ):
+        if self.seed is not None:
+            random.seed(self.seed)
+            np.random.seed(self.seed)
+            torch.manual_seed(self.seed)
+
+        self.device = get_torch_device()
+        dev = self.device
+        self.model.to(dev)
+
+        optimizer = torch.optim.AdamW(self.model.parameters(), learning_rate_init)
+
+        patience_counter = 0
+        best_iter = 0
+        best_val_metric = np.inf
+
+        if patience is not None:
+            if early_stop:
+                if validation_fraction < 0 or validation_fraction > 1:
+                    raise AssertionError(
+                        "validation_fraction must be between 0 and 1 when early_stop is True"
+                    )
+                logger.info(
+                    f"Early stopping on validation loss with patience {patience} "
+                    f"using {validation_fraction} of the data for validation"
+                )
+                train_set, val_set = random_split(
+                    dataset=dataset,
+                    lengths=[1 - validation_fraction, validation_fraction],
+                )
+            else:
+                logger.info(f"Early stopping on training loss with patience {patience}")
+                train_set = dataset
+                val_set = None
+        else:
+            train_set = dataset
+            val_set = None
+
+        train_loader = DataLoader(
+            train_set,
+            batch_size=min(batch_size, len(train_set)),
+            shuffle=True,
+            drop_last=True,
+            num_workers=psutil.cpu_count(False),
+        )
+        val_loader = None
+        if val_set is not None:
+            val_loader = DataLoader(
+                val_set,
+                batch_size=min(batch_size, len(val_set)),
+                num_workers=psutil.cpu_count(False),
+            )
+
+        temp_save_file_path = os.path.join(self.path, self.temp_file_name)
+        for it in range(1, max_iter + 1):
+            self.model.train()
+
+            train_loss = []
+            header = f"TRAIN: ({it}/{max_iter})"
+            metric_logger = MetricLogger(delimiter=" ")
+            for batch in metric_logger.log_every(
+                train_loader, len(train_loader) // 10, header, logger
+            ):
+                # forward
+                batch = (b.to(dev) for b in batch)
+                X, curve, y = batch
+                loss = self.model.train_step(X, curve, y)
+                train_loss.append(loss.item())
+
+                # update
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # log
+                metric_logger.update(loss=loss.item())
+                metric_logger.update(lengthscale=self.model.lengthscale)
+                metric_logger.update(noise=self.model.noise)  # type: ignore
+            logger.info(f"Averaged stats: {str(metric_logger)}")
+            val_metric = np.mean(train_loss)
+
+            if val_loader is not None:
+                self.model.eval()
+
+                val_loss = []
+                with torch.no_grad():
+                    for batch in val_loader:
+                        batch = (b.to(dev) for b in batch)
+                        X, curve, y = batch
+                        pred = self.model.predict(X, curve)
+                        loss = torch.nn.functional.l1_loss(pred.mean, y)
+                        val_loss.append(loss.item())
+                val_metric = np.mean(val_loss)
+
+            if patience is not None:
+                if val_metric + tol < best_val_metric:
+                    patience_counter = 0
+                    best_val_metric = val_metric
+                    best_iter = it
+                    torch.save(self.model.state_dict(), temp_save_file_path)
+                else:
+                    patience_counter += 1
+                logger.info(
+                    f"VAL: {round(val_metric, 4)}  "
+                    f"ITER: {it}/{max_iter}  "
+                    f"BEST: {round(best_val_metric, 4)} ({best_iter})"
+                )
+                if patience_counter >= patience:
+                    logger.warning(
+                        "Early stopping triggered! "
+                        f"No improvement in the last {patience} iterations. "
+                        "Stopping training..."
+                    )
+                    break
+
+        if early_stop:
+            self.model.load_state_dict(torch.load(temp_save_file_path))
+
+        # after training the gp, set its training data
+        # to match the given parameter "_max_train_data_size"
+        self.model.eval()
+        size = min(self._max_train_data_size, len(dataset))
+        loader = DataLoader(dataset, batch_size=size, shuffle=True)
+        a, b, c = next(iter(loader))
+        a, b, c = a.to(dev), b.to(dev), c.to(dev)
+        self.model.set_train_data(a, b, c)
+
+        # TODO: is there a better way to do this?
+        # probabaly not needed when training-data-size is big
+        # test-score on a holdout set
+        # bs: 128 - score: 0.0504
+        # bs: 256 - score: 0.031
+        # bs: 512 - score: 0.0251
+        # bs: 1024 - score: 0.0243
+        # bs: 2048 - score: 0.0237
+        # bs: 4096 - score: 0.0233  -->  seems to be the sweet spot
+        # bs: 8192 - score: 0.0274
+        # bs: 16384 - score: 0.0232
+        # using std/var to find the a better batch
+        # loader = DataLoader(
+        #     dataset,
+        #     batch_size=size,
+        #     shuffle=True,
+        #     num_workers=psutil.cpu_count(False),
+        # )
+        # best_metric = 0
+        # best_batch = None
+        # for batch in loader:
+        #     batch = (b.to(dev) for b in _batch)
+        #     X, curve, y = batch
+        #     encoding = self.model.encoder(X, curve)
+        #     metric = torch.std(encoding, dim=0).mean()
+        #     if metric > best_metric:
+        #         best_metric = metric
+        #         best_batch = X, curve, y
+        # self.model.set_train_data(*best_batch)
+
+    def _fit(
+        self,
+        pipeline: pd.DataFrame,
+        curve: np.ndarray,
+    ):
+        if self.is_fit:
+            raise AssertionError("Predictor is already fit! Create a new one.")
+
+        self._validate_fit_data(pipeline, curve)
+        # x, curve, y = self._transform_data(pipeline, curve)
+        # x = self._preprocess_fit_data(x)
+        # train_dataset = TabularTorchDataset(x, curve, y)
+        x = self._preprocess_fit_data(pipeline)
+        train_dataset = CurveRegressionDataset(x, curve)
+
+        self.model = self._get_model()
+        self._train_model(train_dataset, **self.fit_params)
+
+        self._fit_data = train_dataset
+
+        return self
+
+    def refit(
+        self,
+        X: pd.DataFrame,
+        curve: np.ndarray,
+        fit_params: dict = {},
+    ):
+        if not self.is_fit:
+            raise AssertionError("Model is not fitted yet")
+
+        self._validate_predict_data(X, curve)
+
+        x = self._preprocess_predict_data(X)
+
+        tune_dataset = CurveRegressionDataset(x, curve)
+
+        fit_params = self._validate_fit_params(fit_params, self.refit_params)
+        self._refit_model(tune_dataset, **fit_params)
+
+    def _refit_model(
+        self,
+        tune_set,
+        learning_rate_init,
+        min_batch_size,
+        max_batch_size,
+        max_iter,
+        early_stop,
+        patience,
+        validation_fraction,
+        tol,
+    ):
+        logger.info("Refitting model...")
+        if self.seed is not None:
+            random.seed(self.seed)
+            np.random.seed(self.seed)
+            torch.manual_seed(self.seed)
+        temp_save_file_path = os.path.join(self.path, self.temp_file_name)
+
+        num_workers = psutil.cpu_count(False)
+        self.device = get_torch_device()
+        dev = self.device
+        self.model.to(dev)
+
+        self.model.eval()
+        torch.save(self.model.state_dict(), temp_save_file_path)
+
+        # initial validation loss
+        loader = DataLoader(
+            tune_set,
+            batch_size=min(len(tune_set), max_batch_size),
+            num_workers=num_workers,
+        )
+        val_metric = []
+        for batch in loader:
+            batch = (b.to(dev) for b in batch)
+            X, curve, y = batch
+            pred = self.model.predict(X, curve)
+            loss = torch.nn.functional.l1_loss(pred.mean, y)
+            val_metric.append(loss.item())
+        best_val_metric = np.mean(val_metric)
+        logger.info(f"Initial validation loss: {best_val_metric}")
+        patience_counter = 0
+        best_iter = 0
+
+        assert self._fit_data is not None
+        fitting_set = self._fit_data
+        logger.debug(f"Number of samples in the tuning set: {len(tune_set)}")
+        if len(tune_set) < min_batch_size:
+            logger.warning(
+                f"Tuning-set size is small ({len(tune_set)})."
+                "Using all samples for training + validation. "
+                f"Adding samples from training set to reach minimal sample size {min_batch_size}"
+            )
+
+        if patience is not None:
+            if early_stop:
+                logger.info(
+                    f"Early stopping on validation loss with patience {patience} "
+                )
+            else:
+                logger.info(f"Early stopping on training loss with patience {patience}")
+
+        # make batch size a power of 2 and at least two train steps
+        train_bs = min(int(2 ** np.floor(np.log2(len(tune_set)) - 1)), max_batch_size)
+        # make sure the batch size is not too small >= 512
+        target_bs = max(min_batch_size, train_bs)
+        train_loader = DataLoader(
+            tune_set,
+            batch_size=train_bs,
+            shuffle=True,
+            drop_last=True,
+            num_workers=num_workers,
+        )
+        val_loader = DataLoader(
+            tune_set,
+            batch_size=min(max_batch_size, len(tune_set)),
+            num_workers=num_workers,
+        )
+        extra_loader = None
+        if train_bs < target_bs:
+            extra_loader = DataLoader(
+                fitting_set,
+                batch_size=target_bs - train_bs,
+                shuffle=True,
+                num_workers=num_workers,
+            )
+
+        optimizer = torch.optim.AdamW(self.model.parameters(), learning_rate_init)
+        for it in range(1, max_iter + 1):
+            self.model.train()
+
+            train_loss = []
+            header = f"TRAIN: ({it}/{max_iter})"
+            metric_logger = MetricLogger(delimiter=" ")
+            for batch in metric_logger.log_every(train_loader, 1, header, logger):
+                # forward
+                if extra_loader is not None:
+                    batch_one = next(iter(extra_loader))
+                    batch = [torch.cat([b1, b2]) for b1, b2 in zip(batch, batch_one)]
+                batch = (b.to(dev) for b in batch)
+                X, curve, y = batch
+                loss = self.model.train_step(X, curve, y)
+                train_loss.append(loss.item())
+
+                # update
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # log
+                metric_logger.update(loss=loss.item())
+                metric_logger.update(lengthscale=self.model.lengthscale)
+                metric_logger.update(noise=self.model.noise)  # type: ignore
+            logger.info(f"Averaged stats: {str(metric_logger)}")
+            val_metric = np.mean(train_loss)
+
+            if val_loader is not None:
+                self.model.eval()
+
+                if target_bs < self._max_train_data_size:
+                    _loader = DataLoader(
+                        fitting_set,
+                        batch_size=self._max_train_data_size - train_bs,
+                        shuffle=True,
+                    )
+                    batch_one = next(iter(_loader))
+                    batch_two = next(iter(train_loader))
+                    batch = [
+                        torch.cat([b1, b2]) for b1, b2 in zip(batch_one, batch_two)
+                    ]
+                    batch = (b.to(dev) for b in batch)
+                    a, b, c = batch
+                    self.model.set_train_data(a, b, c)
+
+                val_loss = []
+                with torch.no_grad():
+                    for batch in val_loader:
+                        batch = (b.to(dev) for b in batch)
+                        X, curve, y = batch
+                        pred = self.model.predict(X, curve)
+                        loss = torch.nn.functional.l1_loss(pred.mean, y)
+                        val_loss.append(loss.item())
+                val_metric = np.mean(val_loss)
+
+            if patience is not None:
+                if val_metric + tol < best_val_metric:
+                    patience_counter = 0
+                    best_val_metric = val_metric
+                    best_iter = it
+                    torch.save(self.model.state_dict(), temp_save_file_path)
+                else:
+                    patience_counter += 1
+                logger.info(
+                    f"VAL: {round(val_metric, 4)}  "
+                    f"ITER: {it}/{max_iter}  "
+                    f"BEST: {round(best_val_metric, 4)} ({best_iter})"
+                )
+                if patience_counter >= patience:
+                    logger.warning(
+                        "Early stopping triggered! "
+                        f"No improvement in the last {patience} iterations. "
+                        "Stopping training..."
+                    )
+                    break
+
+        if patience:
+            logger.info(f"Loading best model from iteration {best_iter}")
+            self.model.load_state_dict(torch.load(temp_save_file_path))
+
+        # after training the model, reset GPs training data
+        self.model.eval()
+        if len(tune_set) < self._max_train_data_size:
+            t_loader = DataLoader(tune_set, batch_size=len(tune_set), shuffle=True)
+            f_loader = DataLoader(
+                fitting_set,
+                batch_size=self._max_train_data_size - len(tune_set),
+                shuffle=True,
+            )
+            batch_one = next(iter(t_loader))
+            batch_two = next(iter(f_loader))
+            batch = [torch.cat([b1, b2]) for b1, b2 in zip(batch_one, batch_two)]
+            batch = (b.to(dev) for b in batch)
+            a, b, c = batch
+        else:
+            loader = DataLoader(
+                tune_set, batch_size=self._max_train_data_size, shuffle=True
+            )
+            batch = next(iter(loader))
+            batch = (b.to(dev) for b in batch)
+            a, b, c = batch
+        self.model.set_train_data(a, b, c)
+
+    def predict(self, X: pd.DataFrame, curve: np.ndarray, fill_missing=True):
+        if not self.is_fit:
+            raise AssertionError("Model is not fitted yet")
+
+        self._validate_predict_data(X, curve)
+        x = self._preprocess_predict_data(X, fill_missing)
+        curve = np.nan_to_num(curve)
+
+        device = self.device
+        self.model.eval()
+        self.model.to(device)
+        x = torch.tensor(x, dtype=torch.float32, device=device)
+        c = torch.tensor(curve, dtype=torch.float32, device=device)
+        mean = np.array([])
+        std = np.array([])
+        with torch.no_grad():
+            bs = 4096  # TODO: make this a parameter
+            for i in range(0, x.shape[0], bs):
+                pred = self.model.predict(x[i : i + bs], c[i : i + bs])
+                mean = np.append(mean, pred.mean.cpu().numpy())
+                std = np.append(std, pred.stddev.cpu().numpy())
+        return mean, std
+
+    def save(self, path: str | None = None, verbose=True) -> str:
+        # Save on CPU to ensure the model can be loaded on a box without GPU
+        if self.model is not None:
+            self.model = self.model.to(torch.device("cpu"))
+        path = super().save(path, verbose)
+        # Put the model back to the device after the save
+        if self.model is not None:
+            self.model.to(self.device)
+        return path
+
+    @classmethod
+    def load(cls, path: str, reset_paths=True, verbose=True):
+        """
+        Loads the model from disk to memory.
+        The loaded model will be on the same device it was trained on (cuda/mps);
+        if the device is it's not available (trained on GPU, deployed on CPU),
+        then `cpu` will be used.
+
+        Parameters
+        ----------
+        path : str
+            Path to the saved model, minus the file name.
+            This should generally be a directory path ending with a '/' character (or appropriate path separator value depending on OS).
+            The model file is typically located in os.path.join(path, cls.model_file_name).
+        reset_paths : bool, default True
+            Whether to reset the self.path value of the loaded model to be equal to path.
+            It is highly recommended to keep this value as True unless accessing the original self.path value is important.
+            If False, the actual valid path and self.path may differ, leading to strange behaviour and potential exceptions if the model needs to load any other files at a later time.
+        verbose : bool, default True
+            Whether to log the location of the loaded file.
+
+        Returns
+        -------
+        model : cls
+            Loaded model object.
+        """
+        model: DyHPO = super().load(path=path, reset_paths=reset_paths, verbose=verbose)
+
+        verbosity = model.verbosity
+        set_logger_verbosity(verbosity, logger)
+        return model
 
 
 class GPRegressionModel(gpytorch.models.ExactGP):
@@ -27,56 +693,32 @@ class GPRegressionModel(gpytorch.models.ExactGP):
         self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor):
         mean = self.mean_module(x)
         covar = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean, covar)  # type: ignore
 
 
-class DyHPO(Predictor, torch.nn.Module):
-    """
-    DyHPO  is a predictor model that combines a feature encoder and a Gaussian Process
-    to perform multi-fidelity hyperparameter optimization.
-
-    Args:
-        in_dim (int | list[int]): The input dimension or a list of input dimensions.
-        out_dim (int, optional): The output dimension. Defaults to 32.
-        enc_hidden_dim (int, optional): The hidden dimension of the feature encoder. Defaults to 128.
-        enc_out_dim (int, optional): The output dimension of the feature encoder. Defaults to 32.
-        enc_nlayers (int, optional): The number of layers in the feature encoder. Defaults to 3.
-        in_curve_dim (int, optional): The input dimension of the learning curve. Defaults to 50.
-        out_curve_dim (int, optional): The output dimension of the learning curve. Defaults to 16.
-        curve_channels (int, optional): The number of channels in the learning curve. Defaults to 1.
-        in_metafeat_dim (int | None, optional): The input dimension of the meta-features. Defaults to None.
-        out_metafeat_dim (int, optional): The output dimension of the meta-features. Defaults to 16.
-    """
-
+class SurrogateModel(torch.nn.Module):
     def __init__(
         self,
         in_dim: int | list[int],
+        in_curve_dim: int,
         out_dim: int = 32,
         enc_hidden_dim: int = 128,
         enc_out_dim: int = 32,
         enc_nlayers: int = 3,
-        in_curve_dim: int = 50,
         out_curve_dim: int = 16,
-        curve_channels: int = 1,
-        in_metafeat_dim: int | None = None,
-        out_metafeat_dim: int = 16,
     ):
         super().__init__()
-
         self.encoder = FeatureEncoder(
             in_dim,
+            in_curve_dim,
             out_dim,
             enc_hidden_dim,
             enc_out_dim,
             enc_nlayers,
-            in_curve_dim,
             out_curve_dim,
-            curve_channels,
-            in_metafeat_dim,
-            out_metafeat_dim,
         )
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
         self.gp_model = GPRegressionModel(
@@ -89,285 +731,32 @@ class DyHPO(Predictor, torch.nn.Module):
             self.gp_model,
         )
 
-    @torch.no_grad()
-    def predict(self, data: dict[str, torch.Tensor]):
-        self.eval()
-        enc = self.encoder(**data)
-        output = self.gp_model(enc)
+    def forward(self, pipeline, curve):
+        encoding = self.encoder(pipeline, curve)
+        output = self.gp_model(encoding)
         return self.likelihood(output)
 
-    def train_step(self, X: dict[str, torch.Tensor], y: torch.Tensor):
-        enc = self.encoder(**X)
-        self.gp_model.set_train_data(enc, y, False)
-        output = self.gp_model(enc)
+    @torch.no_grad()
+    def predict(self, pipeline, curve):
+        return self(pipeline, curve)
+
+    def train_step(self, pipeline, curve, y) -> torch.Tensor:
+        encoding = self.encoder(pipeline, curve)
+        self.gp_model.set_train_data(encoding, y, False)
+        output = self.gp_model(encoding)
         loss = -self.mll(output, y)  # type: ignore
         return loss
 
-    def fit(
-        self,
-        dataset: Dataset,
-        bs: int = 128,
-        lr: float = 1e-3,
-        train_steps: int = 10_000,
-        val_freq: int = 100,
-        use_scheduler: bool = True,
-        test_size: float = 0.2,
-        seed: int | None = None,
-        cache_dir: str = "~/.cache/qtt/dyhpo",
-        log_freq: int = 10,
-    ):
-        """
-        Fits the model to the given dataset.
-        Args:
-            dataset (Dataset): The dataset to train the model on.
-            bs (int, optional): The batch size for training. Defaults to 128.
-            lr (float, optional): The learning rate for training. Defaults to 1e-3.
-            train_steps (int, optional): The number of training steps. Defaults to 10_000.
-            val_freq (int, optional): The frequency of validation. Defaults to 100.
-            use_scheduler (bool, optional): Whether to use a learning rate scheduler. Defaults to True.
-            test_size (float, optional): The size of the test set. Defaults to 0.2.
-            seed (int | None, optional): The random seed for reproducibility. Defaults to None.
-            cache_dir (str, optional): The directory to cache data. Defaults to "~/.cache/qtt/dyhpo".
-            log_freq (int, optional): The frequency of logging. Defaults to 10.
-        Returns:
-            The fitted model.
-        """
-        return self._fit(
-            dataset,
-            bs,
-            lr,
-            train_steps,
-            val_freq,
-            use_scheduler,
-            test_size,
-            seed,
-            cache_dir,
-            log_freq,
-        )
-
-    def update(
-        self,
-        dataset: Dataset | dict,
-        bs: int = 64,
-        lr: float = 1e-4,
-        train_steps: int = 100,
-        val_freq: int = 10,
-        use_scheduler: bool = False,
-        test_size: float = 0.2,
-        seed: int | None = None,
-        cache_dir: str = "~/.cache/qtt/dyhpo",
-        log_freq: int = 10,
-    ):
-        """
-        Updates the model with new data.
-        Args:
-            dataset (Dataset): The dataset to train the model on.
-            bs (int, optional): The batch size for training. Defaults to 128.
-            lr (float, optional): The learning rate for training. Defaults to 1e-3.
-            train_steps (int, optional): The number of training steps. Defaults to 10_000.
-            val_freq (int, optional): The frequency of validation. Defaults to 100.
-            use_scheduler (bool, optional): Whether to use a learning rate scheduler. Defaults to True.
-            test_size (float, optional): The size of the test set. Defaults to 0.2.
-            seed (int | None, optional): The random seed for reproducibility. Defaults to None.
-            cache_dir (str, optional): The directory to cache data. Defaults to "~/.cache/qtt/dyhpo".
-            log_freq (int, optional): The frequency of logging. Defaults to 10.
-        Returns:
-            The updated model.
-        """
-        if isinstance(dataset, dict):
-            dataset = StackDataset(**dataset)
-
-        return self._fit(
-            dataset,
-            bs,
-            lr,
-            train_steps,
-            val_freq,
-            use_scheduler,
-            test_size,
-            seed,
-            cache_dir,
-            log_freq,
-        )
-
-    def _fit(
-        self,
-        dataset: Dataset,
-        bs: int,
-        lr: float,
-        train_steps: int,
-        val_freq: int,
-        use_scheduler: bool,
-        test_size: float,
-        seed: int | None,
-        cache_dir: str,
-        log_freq: int,
-    ):
-        # ============ setup cache dir and device ... ============
-        cache_dir = os.path.expanduser(cache_dir)
-        os.makedirs(cache_dir, exist_ok=True)
-
-        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.to(dev)
-
-
-        # ============ preparing data ... ============
-        generator = torch.Generator().manual_seed(seed) if seed is not None else None
-        trainset, valset = random_split(
-            dataset=dataset,
-            lengths=[1 - test_size, test_size],
-            generator=generator,
-        )
-        train_loader = IterLoader(
-            dataset=trainset,
-            batch_size=min(bs, len(trainset)),
-            shuffle=True,
-            drop_last=True,
-            collate_fn=dict_collate,
-            steps=train_steps,
-        )
-        val_loader = DataLoader(
-            dataset=valset,
-            batch_size=min(bs, len(valset)),
-            collate_fn=dict_collate,
-            # steps=val_steps,
-        )
-
-        # ============ preparing optimizer ... ============
-        optimizer = torch.optim.AdamW(self.parameters(), lr)
-        scheduler = None
-        if use_scheduler:
-            scheduler = CosineAnnealingLR(optimizer, train_steps, eta_min=1e-6)
-
-        # ============ training ... ============
-        # when doing update, save the model before training
-        self.save(cache_dir)
-        min_error = self.__validate(dev, val_loader)
-        print(f"Initial validation error: {min_error:.3f}")
-        self.train()
-        metric_log = MetricLogger(delimiter="  ")
-        for it, batch in enumerate(
-            metric_log.log_every(train_loader, log_freq, "TRAIN"), 1
-        ):
-            batch = dict_tensor_to_device(batch, dev)
-            train_x, target = self.__generate_batch(batch)
-
-            loss = self.train_step(train_x, target)
-
-            # update
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            scheduler.step() if scheduler is not None else None
-
-            # logging
-            metric_log.update(loss=loss.item())
-            metric_log.update(
-                lengthscale=self.gp_model.covar_module.base_kernel.lengthscale.item()
-            )
-            metric_log.update(noise=self.gp_model.likelihood.noise.item())  # type: ignore
-
-            # validation
-            if not it % val_freq:
-                val_error = self.__validate(dev, val_loader)
-                logger.debug(f"VAL [{it}] val-error: {val_error:.3f}")
-                print(f"VAL [{it}] val-error: {val_error:.3f}")
-                if val_error < min_error:
-                    min_error = val_error
-                    self.save(cache_dir)
-                self.train()
-
-        # Load the model with the best validation error
-        print(f"Loading the model with the best validation error: {min_error:.3f}")
-        self.load(cache_dir)
-        return self
-
     @torch.no_grad()
-    def __validate(self, dev, val_loader):
+    def set_train_data(self, pipeline, curve, y) -> None:
         self.eval()
-        val_loss = []
-        for batch in val_loader:
-            batch = dict_tensor_to_device(batch, dev)
-            train_x, target = self.__generate_val_batch(batch)
-            pred = self.predict(train_x)
-            loss = torch.nn.functional.l1_loss(pred.mean, target)
-            val_loss.append(loss.item())
-        val_error = sum(val_loss) / len(val_loss)
-        return val_error
+        encoding = self.encoder(pipeline, curve)
+        self.gp_model.set_train_data(encoding, y, False)
 
-    def __generate_batch(self, data: dict[str, torch.Tensor]):
-        curve = data["curve"]
-        BS, N = curve.shape
-        # not all learning curves are fully evaluated
-        fidelity = (curve != 0).sum(dim=1)
-        # sample random fidelity
-        rnd_bdgt = torch.randint_like(fidelity, low=1, high=N)
-        fidelity = torch.min(fidelity, rnd_bdgt)
-        # target is the score at the fidelity
-        target = curve[torch.arange(curve.size(0)), fidelity - 1]
-        # set the scores after the fidelity to 0
-        rows = torch.arange(N).expand(BS, N).to(curve.device)
-        indices = fidelity.view(-1, 1).expand(BS, N) - 2
-        mask = rows > indices
-        curve[mask] = 0
+    @property
+    def lengthscale(self) -> float:
+        return self.gp_model.covar_module.base_kernel.lengthscale.item()
 
-        train = {
-            "config": data["config"],
-            "curve": curve,
-            "fidelity": fidelity / N,
-            "metafeat": data.get("metafeat"),
-        }
-        return train, target
-
-    def __generate_val_batch(self, data: dict[str, torch.Tensor]):
-        """
-        Generate validation batch for DyHPO.
-        Similar as __generate_batch but without randomness.
-        Validating the model on fixed NS values over the learning curve.
-        """
-        # NS = 10  # number of samples
-        config = data["config"]
-        curve = data["curve"]
-        metafeat = data.get("metafeat")
-        BS, N = curve.shape
-
-        # not all learning curves are fully evaluated
-        max_fidelity = (curve != 0).sum(dim=1).reshape(-1, 1)
-        samples = torch.arange(N, device=config.device).reshape(1, -1)
-        fidelity = torch.min(max_fidelity, samples)
-        mask = (fidelity < max_fidelity).reshape(-1)
-
-        config = config.repeat_interleave(N, 0)[mask]
-        curve = curve.repeat_interleave(N, 0)[mask]
-        fidelity = fidelity.reshape(-1)[mask]
-        if metafeat is not None:
-            metafeat = metafeat.repeat_interleave(N, 0)
-            metafeat = metafeat[mask]
-
-        # target is the score at the fidelity
-        # fidelity starts from 1, so we need to subtract 1
-        target = curve[torch.arange(curve.size(0)), fidelity - 1]
-
-        # set the curve values at the fidelity and after to 0
-        row_indices = torch.arange(N, device=curve.device).unsqueeze(0)
-        indices = fidelity.unsqueeze(1) - 2
-        mask = row_indices > indices.expand_as(curve)
-        curve[mask] = 0
-
-        train = {
-            "config": config,
-            "curve": curve,
-            "fidelity": fidelity / N,
-            "metafeat": metafeat,
-        }
-        return train, target
-
-    def save(self, path: str | Path, name: str = "dyhpo.pth"):
-        path = Path(path)
-        torch.save(self.state_dict(), path / name)
-
-    def load(self, path: str | Path, name: str = "dyhpo.pth"):
-        path = Path(path)
-        ckp = torch.load(path / name, map_location="cpu")
-        self.load_state_dict(ckp)
-        return self
+    @property
+    def noise(self) -> float:
+        return self.gp_model.likelihood.noise.item()  # type: ignore

@@ -28,14 +28,16 @@ class QuickTuner:
         self,
         optimizer: BaseOptimizer,
         f: Callable,
-        path: Optional[str] = None,
-        save_freq: Optional[str] = "incumbent",
+        path: str | None = None,
+        save_freq: str = "step",
         verbosity: int = 2,
         **kwargs,
     ):
         self.verbosity = verbosity
         set_logger_verbosity(verbosity, logger)
-        self.output_path = setup_outputdir(path, path_suffix=self.path_suffix)
+        self.output_path = setup_outputdir(
+            path, path_suffix=self.path_suffix, timestamp=True
+        )
         self._setup_log_to_file(self._log_to_file, self._log_file_path)
 
         self._validate_kwargs(kwargs)
@@ -112,14 +114,6 @@ class QuickTuner:
         try:
             history_path = os.path.join(self.output_path, "history.csv")
             history_df = pd.DataFrame(self.history)
-            # Check if the 'info' column is empty or contains only None values
-            # if (
-            #     history_df["info"]
-            #     .apply(lambda x: (isinstance(x, dict) and len(x) == 0))
-            #     .all()
-            # ):
-            #     # Drop the 'info' column
-            #     history_df = history_df.drop(columns=["info"])
             history_df.to_csv(history_path)
         except Exception as e:
             logger.warning(f"History not saved: {e!r}")
@@ -142,8 +136,8 @@ class QuickTuner:
     def run(
         self,
         task_info: dict | None = None,
-        fevals: Optional[int] = None,
-        time_budget: Optional[float] = None,
+        fevals: int | None = None,
+        time_budget: float | None = None,
     ):
         logger.info("Starting QuickTuner Run...")
         logger.info(f"QuickTuneTool will save results to {self.output_path}")

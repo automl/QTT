@@ -97,6 +97,12 @@ def finetune_script(
         args += ["--auto_augment", str(vers)]
     elif data_augmentation == "trivial_augment":
         args += [f"--{data_augmentation}"]
+    elif data_augmentation == "random_augment":
+        ra_num_ops = config.get("ra_num_ops")
+        ra_magnitude = config.get("ra_magnitude")
+        args += ["--random_augment"]
+        args += ["--ra_num_ops", str(ra_num_ops)]
+        args += ["--ra_magnitude", str(ra_magnitude)]
 
     # OPTIMIZER BETAS
     opt_betas = config.get("opt_betas")

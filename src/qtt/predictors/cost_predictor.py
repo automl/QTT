@@ -1,245 +1,443 @@
 import logging
 import os
-from pathlib import Path
+import random
 
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader, Dataset, StackDataset, random_split
+from sklearn import preprocessing
+from torch.utils.data import DataLoader, random_split
 
-from qtt.data.utils import IterLoader, dict_collate, dict_tensor_to_device
-
+from ..utils.log_utils import set_logger_verbosity
+from .abstract import AbstractPredictor
+from .data import SimpleTorchTabularDataset, create_preprocessor, get_feature_mapping
 from .models import MLP
-from .predictor import Predictor
-from .utils import MetricLogger
+from .utils import MetricLogger, get_torch_device
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_FIT_PARAMS = {
+    "learning_rate_init": 0.0005,
+    "batch_size": 2048,
+    "max_iter": 100,
+    "early_stop": True,
+    "patience": 5,
+    "validation_fraction": 0.1,
+    "tol": 1e-4,
+}
 
-class CostPredictor(Predictor, torch.nn.Module):
+# DEFAULT_REFIT_PARAMS = {
+#     "learning_rate_init": 0.0001,
+#     "batch_size": 128,
+#     "max_iter": 10,
+#     "early_stop": True,
+#     "patience": 3,
+#     "validation_fraction": 0.1,
+#     "tol": 1e-4,
+# }
+
+
+class CostPredictor(AbstractPredictor):
+    temp_file_name = "temp_model.pt"
+
+    def __init__(
+        self,
+        fit_params: dict = {},
+        # refit_params: dict = {},
+        path: str | None = None,
+        seed: int | None = None,
+        verbosity: int = 2,
+    ) -> None:
+        super().__init__(path=path)
+
+        self.fit_params = self._validate_fit_params(fit_params, DEFAULT_FIT_PARAMS)
+        # self.refit_params = self._validate_fit_params(
+        #     refit_params, DEFAULT_REFIT_PARAMS
+        # )
+        self.seed = seed
+        self.verbose = verbosity
+
+        set_logger_verbosity(verbosity, logger)
+
+    @staticmethod
+    def _validate_fit_params(fit_params, default_params):
+        if not isinstance(fit_params, dict):
+            raise ValueError("fit_params must be a dictionary")
+        for key in fit_params:
+            if key not in default_params:
+                raise ValueError(f"Unknown fit parameter: {key}")
+        return {**default_params, **fit_params}
+
+    def _get_model(self):
+        params = {
+            "in_dim": [
+                len(self.types_of_features["continuous"]),
+                len(self.types_of_features["categorical"])
+                + len(self.types_of_features["bool"]),
+            ],
+            "enc_out_dim": 16,
+            "enc_nlayers": 3,
+            "enc_hidden_dim": 128,
+        }
+        model = SimpleMLPRegressor(**params)
+        return model
+
+    def _get_types_of_features(self, df):
+        continous_features = list(df.select_dtypes(include=["number"]).columns)
+        categorical_features = list(df.select_dtypes(include=["object"]).columns)
+        bool_features = list(df.select_dtypes(include=["bool"]).columns)
+        valid_features = continous_features + categorical_features + bool_features
+
+        if len(valid_features) != df.shape[1]:
+            unknown_features = [col for col in df.columns if col not in valid_features]
+            logger.warning(
+                f"Features {unknown_features} have unknown dtypes and are dropped"
+            )
+            df = df.drop(columns=unknown_features)
+
+        features_to_drop = df.columns[df.isna().all()].tolist()
+        if features_to_drop:
+            logger.warning(
+                f"Features {features_to_drop} have only NaN values and are dropped"
+            )
+            df = df.drop(columns=features_to_drop)
+
+        types_of_features = {"continuous": [], "categorical": [], "bool": []}
+        for col in df.columns:
+            if col in continous_features:
+                types_of_features["continuous"].append(col)
+            elif col in categorical_features:
+                types_of_features["categorical"].append(col)
+            elif col in bool_features:
+                types_of_features["bool"].append(col)
+        return types_of_features, df
+
+    def _validate_fit_data(self, X, y):
+        if not isinstance(X, pd.DataFrame) or not isinstance(y, np.ndarray):
+            raise ValueError("X and y must be pandas.DataFrame instances")
+
+        if X.shape[0] != y.shape[0]:
+            raise ValueError("X and y must have the same number of samples")
+
+        if y.shape[1] != 1:
+            raise ValueError("y must have only one column")
+
+        if len(set(X.columns)) < len(X.columns):
+            raise ValueError(
+                "Column names are not unique, please change duplicated column names (in pandas: train_data.rename(columns={'current_name':'new_name'})"
+            )
+
+    def _validate_predict_data(self, pipeline):
+        if not isinstance(pipeline, pd.DataFrame):
+            raise ValueError("pipeline and curve must be pandas.DataFrame instances")
+
+        if len(set(pipeline.columns)) < len(pipeline.columns):
+            raise ValueError(
+                "Column names are not unique, please change duplicated column names (in pandas: train_data.rename(columns={'current_name':'new_name'})"
+            )
+
+    def _preprocess_fit_data(self, df: pd.DataFrame):
+        """
+        Process data for fitting the model.
+        """
+        self._original_features = list(df.columns)
+        drop_columns = [col for col in df.columns if df[col].nunique() == 1]
+        if len(drop_columns) > 0:
+            logger.warning(
+                f"Columns {drop_columns} have only one unique value and are ignored"
+            )
+            df.drop(columns=drop_columns, inplace=True)
+        self._drop_features = drop_columns
+
+        self.types_of_features, df = self._get_types_of_features(df)
+        self._input_features = list(df.columns)
+        continous_features = self.types_of_features["continuous"]
+        categorical_features = self.types_of_features["categorical"]
+        bool_features = self.types_of_features["bool"]
+        self.preprocessor = create_preprocessor(
+            continous_features,
+            categorical_features,
+            bool_features,
+        )
+        out = self.preprocessor.fit_transform(df)
+        self._feature_mapping = get_feature_mapping(self.preprocessor)
+        if out.shape[1] != sum(len(v) for v in self._feature_mapping.values()):
+            raise ValueError(
+                "Error during one-hot encoding data processing for neural network. "
+                "Number of columns in df array does not match feature_mapping."
+            )
+
+        return out
+
+    def _preprocess_predict_data(self, df: pd.DataFrame, fill_missing=True):
+        unexpected_columns = set(df.columns) - set(self._original_features)
+        if len(unexpected_columns) > 0:
+            logger.warning(
+                "Data contains columns that were not present during fitting: "
+                f"{unexpected_columns}"
+            )
+
+        df = df.drop(columns=self._drop_features, errors="ignore")
+
+        missing_columns = set(self._input_features) - set(df.columns)
+        if len(missing_columns) > 0:
+            if fill_missing:
+                logger.warning(
+                    "Data is missing columns that were present during fitting: "
+                    f"{missing_columns}. Trying to fill them with mean values / zeros."
+                )
+                for col in missing_columns:
+                    df[col] = None
+            else:
+                raise AssertionError(
+                    "Data is missing columns that were present during fitting: "
+                    f"{missing_columns}. Please fill them with appropriate values."
+                )
+        X = self.preprocessor.transform(df)
+        X = np.array(X)
+        X = np.nan_to_num(X)
+        return X
+
+    def _fit_model(
+        self,
+        dataset,
+        learning_rate_init,
+        batch_size,
+        max_iter,
+        early_stop,
+        patience,
+        validation_fraction,
+        tol,
+    ):
+        if self.seed is not None:
+            random.seed(self.seed)
+            np.random.seed(self.seed)
+            torch.manual_seed(self.seed)
+
+        self.device = get_torch_device()
+        _dev = self.device
+        self.model.to(_dev)
+
+        optimizer = torch.optim.AdamW(self.model.parameters(), learning_rate_init)
+
+        patience_counter = 0
+        best_iter = 0
+        best_val_metric = np.inf
+
+        if patience is not None:
+            if early_stop:
+                if validation_fraction < 0 or validation_fraction > 1:
+                    raise AssertionError(
+                        "validation_fraction must be between 0 and 1 when early_stop is True"
+                    )
+                logger.info(
+                    f"Early stopping on validation loss with patience {patience} "
+                    f"using {validation_fraction} of the data for validation"
+                )
+                train_set, val_set = random_split(
+                    dataset=dataset,
+                    lengths=[1 - validation_fraction, validation_fraction],
+                )
+            else:
+                logger.info(f"Early stopping on training loss with patience {patience}")
+                train_set = dataset
+                val_set = None
+        else:
+            train_set = dataset
+            val_set = None
+
+        bs = min(batch_size, int(2 ** (3 + np.floor(np.log10(len(train_set))))))
+        train_loader = DataLoader(
+            train_set, batch_size=bs, shuffle=True, drop_last=True
+        )
+        val_loader = None
+        if val_set is not None:
+            bs = min(batch_size, int(2 ** (3 + np.floor(np.log10(len(val_set))))))
+            val_loader = DataLoader(val_set, batch_size=bs)
+
+        temp_save_file_path = os.path.join(self.path, self.temp_file_name)
+        for it in range(1, max_iter + 1):
+            self.model.train()
+
+            train_loss = []
+            header = f"TRAIN: ({it}/{max_iter})"
+            metric_logger = MetricLogger(delimiter=" ")
+            for batch in metric_logger.log_every(
+                train_loader, len(train_loader) // 10, header, logger
+            ):
+                # forward
+                batch = [item.to(_dev) for item in batch]
+                X, y = batch
+                loss = self.model.train_step(X, y)
+                train_loss.append(loss.item())
+
+                # update
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                metric_logger.update(loss=loss.item())
+            logger.info(f"Averaged stats: {str(metric_logger)}")
+            val_metric = np.mean(train_loss)
+
+            if val_loader is not None:
+                self.model.eval()
+
+                val_loss = []
+                with torch.no_grad():
+                    for batch in val_loader:
+                        batch = [item.to(_dev) for item in batch]
+                        X, y = batch
+                        pred = self.model.predict(X)
+                        loss = torch.nn.functional.l1_loss(pred, y)
+                        val_loss.append(loss.item())
+                val_metric = np.mean(val_loss)
+
+            if patience is not None:
+                if val_metric + tol < best_val_metric:
+                    patience_counter = 0
+                    best_val_metric = val_metric
+                    best_iter = it
+                    torch.save(self.model.state_dict(), temp_save_file_path)
+                else:
+                    patience_counter += 1
+                logger.info(
+                    f"ITER: {it}/{max_iter}  "
+                    f"VAL: {round(val_metric, 4)}  "
+                    f"BEST: {round(best_val_metric, 4)} ({best_iter})"
+                )
+                if patience_counter >= patience:
+                    logger.warning(
+                        "Early stopping triggered! "
+                        f"No improvement in the last {patience} iterations. "
+                        "Stopping training..."
+                    )
+                    break
+
+        if early_stop:
+            self.model.load_state_dict(torch.load(temp_save_file_path))
+
+    def _fit(
+        self,
+        X: pd.DataFrame,
+        y: np.ndarray,
+    ):
+        if self.is_fit:
+            raise AssertionError("Predictor is already fit! Create a new one.")
+
+        self._validate_fit_data(X, y)
+        x = self._preprocess_fit_data(X)
+        self.label_scaler = preprocessing.PowerTransformer("box-cox")
+        y = self.label_scaler.fit_transform(y)
+        train_dataset = SimpleTorchTabularDataset(x, y)
+
+        self.model = self._get_model()
+
+        self._fit_model(train_dataset, **self.fit_params)
+
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        if not self.is_fit:
+            raise AssertionError("Model is not fitted yet")
+
+        self._validate_predict_data(X)
+
+        x = self._preprocess_predict_data(X)
+
+        device = self.device
+
+        self.model.eval()
+        self.model.to(device)
+        x_t = torch.tensor(x, dtype=torch.float32).to(device)
+
+        with torch.no_grad():
+            pred = self.model.predict(x_t).cpu().numpy()
+        pred = self.label_scaler.inverse_transform(pred)
+        pred = np.array(pred)
+        return pred
+
+    def save(self, path: str | None = None, verbose=True) -> str:
+        # Save on CPU to ensure the model can be loaded on a box without GPU
+        if self.model is not None:
+            self.model = self.model.to(torch.device("cpu"))
+        path = super().save(path, verbose)
+        # Put the model back to the device after the save
+        if self.model is not None:
+            self.model.to(self.device)
+        return path
+
+    @classmethod
+    def load(cls, path: str, reset_paths=True, verbose=True):
+        """
+        Loads the model from disk to memory.
+        The loaded model will be on the same device it was trained on (cuda/mps);
+        if the device is it's not available (trained on GPU, deployed on CPU),
+        then `cpu` will be used.
+
+        Parameters
+        ----------
+        path : str
+            Path to the saved model, minus the file name.
+            This should generally be a directory path ending with a '/' character (or appropriate path separator value depending on OS).
+            The model file is typically located in os.path.join(path, cls.model_file_name).
+        reset_paths : bool, default True
+            Whether to reset the self.path value of the loaded model to be equal to path.
+            It is highly recommended to keep this value as True unless accessing the original self.path value is important.
+            If False, the actual valid path and self.path may differ, leading to strange behaviour and potential exceptions if the model needs to load any other files at a later time.
+        verbose : bool, default True
+            Whether to log the location of the loaded file.
+
+        Returns
+        -------
+        model : cls
+            Loaded model object.
+        """
+        model: CostPredictor = super().load(
+            path=path, reset_paths=reset_paths, verbose=verbose
+        )
+        return model
+
+
+class SimpleMLPRegressor(torch.nn.Module):
     def __init__(
         self,
         in_dim: int | list[int],
-        enc_hidden_dim: int = 128,
-        enc_out_dim: int = 32,
+        enc_out_dim: int = 8,
         enc_nlayers: int = 3,
-        in_metafeat_dim: int | None = None,
-        out_metafeat_dim: int = 4,
-        **kwargs,
+        enc_hidden_dim: int = 128,
     ):
         super().__init__()
-        if kwargs:
-            for key in kwargs:
-                logger.info(
-                    f"CostPredictor.__init__() got an unexpected keyword argument: {key}"
-                )
         if isinstance(in_dim, int):
             in_dim = [in_dim]
         self.in_dim = in_dim
 
         # build config encoder
         encoder = nn.ModuleList()
-        for dim in in_dim:
+        for dim in self.in_dim:
             encoder.append(MLP(dim, enc_out_dim, enc_nlayers, enc_hidden_dim))
         self.config_encoder = encoder
-        enc_dims = len(in_dim) * enc_out_dim
-
-        if in_metafeat_dim is not None:
-            self.meta_encoder = MLP(in_metafeat_dim, out_metafeat_dim)
-            enc_dims += out_metafeat_dim
-        else:
-            self.meta_encoder = None
+        enc_dims = len(self.config_encoder) * enc_out_dim
 
         self.head = MLP(enc_dims, 1, enc_nlayers, enc_hidden_dim, act_fn=nn.GELU)
 
-    @torch.no_grad()
-    def predict(self, config, metafeat=None, **kwarg):
-        self.eval()
-        return self(config, metafeat).detach().cpu().numpy().squeeze()
-
-    def forward(self, config, metafeat=None, **kwargs):
-        # encode config
+    def forward(self, X):
         x = []
         start = 0
         for i, dim in enumerate(self.in_dim):
             end = start + dim
-            output = self.config_encoder[i](config[:, start:end])  # type: ignore
+            output = self.config_encoder[i](X[:, start:end])
             x.append(output)
             start = end
         x = torch.cat(x, dim=1)
-
-        if self.meta_encoder is not None:
-            out = self.meta_encoder(metafeat)
-            x = torch.cat([x, out], dim=1)
-
         x = self.head(x)
-        x = nn.functional.relu(x)  # cost is always positive
         return x
 
-    def fit(
-        self,
-        dataset: Dataset,
-        bs: int = 256,
-        lr: float = 1e-3,
-        train_steps: int = 10_000,
-        val_freq: int = 100,
-        use_scheduler: bool = False,
-        test_size: float = 0.2,
-        seed: int | None = None,
-        cache_dir: str = "~/.cache/qtt/cost_predictor",
-        ckpt_name: str = "cost.pth",
-        log_freq: int = 10,
-    ):
-        return self._fit(
-            dataset,
-            bs,
-            lr,
-            train_steps,
-            val_freq,
-            use_scheduler,
-            test_size,
-            seed,
-            cache_dir,
-            ckpt_name,
-            log_freq,
-        )
+    def predict(self, X):
+        return self(X)
 
-    def update(
-        self,
-        data: Dataset | dict,
-        bs: int = 64,
-        lr: float = 1e-4,
-        train_steps: int = 100,
-        val_freq: int = 10,
-        use_scheduler: bool = False,
-        test_size: float = 0.2,
-        seed: int | None = None,
-        cache_dir: str = "~/.cache/qtt/cost_predictor",
-        ckpt_name: str = "cost.pth",
-        log_freq: int = 10,
-    ):
-        if isinstance(data, dict):
-            dataset = StackDataset(**data)
-        return self._fit(
-            dataset,
-            bs,
-            lr,
-            train_steps,
-            val_freq,
-            use_scheduler,
-            test_size,
-            seed,
-            cache_dir,
-            ckpt_name,
-            log_freq,
-        )
-
-    def _fit(
-        self,
-        dataset: Dataset,
-        bs: int = 128,
-        lr: float = 1e-3,
-        train_steps: int = 10_000,
-        val_freq: int = 10,
-        use_scheduler: bool = False,
-        test_size: float = 0.2,
-        seed: int | None = None,
-        cache_dir: str = "~/.cache/qtt/cost_predictor",
-        ckpt_name: str = "cost.pth",
-        log_freq: int = 10,
-    ):
-        # ============ setup cache dir and device ... ============
-        cache_dir = os.path.expanduser(cache_dir)
-        os.makedirs(cache_dir, exist_ok=True)
-        save_path = os.path.join(cache_dir, ckpt_name)
-
-        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.to(dev)
-
-        # ============ preparing data ... ============
-        generator = torch.Generator().manual_seed(seed) if seed is not None else None
-        trainset, valset = random_split(
-            dataset=dataset,
-            lengths=[1 - test_size, test_size],
-            generator=generator,
-        )
-        train_loader = IterLoader(
-            dataset=trainset,
-            batch_size=bs,
-            shuffle=True,
-            drop_last=True,
-            collate_fn=dict_collate,
-            steps=train_steps,
-        )
-        val_loader = DataLoader(
-            dataset=valset,
-            batch_size=bs,
-            collate_fn=dict_collate,
-        )
-
-        # ============ preparing optimizer ... ============
-        optimizer = torch.optim.AdamW(self.parameters(), lr)
-        scheduler = None
-        if use_scheduler:
-            scheduler = CosineAnnealingLR(optimizer, train_steps, eta_min=1e-6)
-
-        # ============ training ... ============
-        torch.save(self.state_dict(), save_path)
-        min_error = self.__validate(dev, val_loader)
-        print(f"Initial validation error: {min_error:.3f}")
-        self.train()
-        metric_log = MetricLogger(delimiter="  ")
-        for it, batch in enumerate(
-            metric_log.log_every(train_loader, log_freq, "TRAIN"), 1
-        ):
-            batch = dict_tensor_to_device(batch, dev)
-            config, metafeat, cost = batch["config"], batch["metafeat"], batch["cost"]
-
-            # forward + loss
-            output = self(config, metafeat)
-            loss = torch.nn.functional.mse_loss(output, cost)
-
-            # update
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            scheduler.step() if scheduler is not None else None            
-
-            # logging
-            metric_log.update(loss=loss.item())
-
-            # validation
-            if not it % val_freq:
-                self.eval()
-                val_error = self.__validate(dev, val_loader)
-                print(f"VAL [{it}] val-error: {val_error:.3f}")
-                if val_error < min_error:
-                    min_error = val_error
-                    torch.save(self.state_dict(), save_path)
-                self.train()
-
-        # Load the model with the best validation error
-        print(f"Loading the model with the best validation error: {min_error:.3f}")
-        self.load_state_dict(torch.load(save_path))
-        return self
-
-    def __validate(self, dev, val_loader):
-        val_loss = []
-        for batch in val_loader:
-            batch = dict_tensor_to_device(batch, dev)
-            config, metafeat, cost = batch["config"], batch["metafeat"], batch["cost"]
-            output = self(config, metafeat)
-            loss = torch.nn.functional.l1_loss(output, cost)
-            val_loss.append(loss.item())
-        val_error = sum(val_loss) / len(val_loss)
-        return val_error
-
-    def save(self, path: str | Path, name: str = "cost_predictor.pth"):
-        path = Path(path)
-        torch.save(self.state_dict(), path / name)
-
-    def load(self, path: str | Path, name: str = "cost_predictor.pth"):
-        path = Path(path)
-        ckp = torch.load(path / name)
-        self.load_state_dict(ckp)
-        return self
+    def train_step(self, X, y):
+        pred = self(X)
+        loss = torch.nn.functional.huber_loss(pred, y)
+        return loss

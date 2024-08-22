@@ -2,7 +2,7 @@
 name = "quicktunetool"
 version = "0.0.1"
 dependencies = [
-  "torch >= 2.0.0",
+  "torch > 2.0.0",
   "torchvision >= 0.15.1",
   "ConfigSpace >= 1.2.0",
   "gpytorch >= 1.9.0",
@@ -35,6 +35,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "*" = ["*.*"]
+
+[project.scripts]
+finetune = "qtt.finetune.cv.classification.finetune:finetune"
 
 [project.urls]
 Homepage = "https://github.com/automl/QTT"

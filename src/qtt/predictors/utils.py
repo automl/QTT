@@ -4,7 +4,6 @@ from collections import defaultdict, deque
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
 
 
 class SmoothedValue(object):
@@ -87,41 +86,31 @@ class MetricLogger(object):
     def add_meter(self, name, meter):
         self.meters[name] = meter
 
-    def log_every(self, iterable, print_freq, header=None):
+    def log_every(self, iterable, print_freq, header=None, logger=None):
         i = 1
         if not header:
             header = ""
+        _print = print if logger is None else logger.info
         start_time = time.time()
         end = time.time()
         iter_time = SmoothedValue(fmt="{avg:.3f}")
         space_fmt = ":" + str(len(str(len(iterable)))) + "d"
-        if torch.cuda.is_available():
-            log_msg = self.delimiter.join(
-                [
-                    header,
-                    "[{0" + space_fmt + "}/{1}]",
-                    "eta: {eta}",
-                    "{meters}",
-                    "time: {time}",
-                ]
-            )
-        else:
-            log_msg = self.delimiter.join(
-                [
-                    header,
-                    "[{0" + space_fmt + "}/{1}]",
-                    "eta: {eta}",
-                    "{meters}",
-                    "time: {time}",
-                ]
-            )
+        log_msg = self.delimiter.join(
+            [
+                header,
+                "[{0" + space_fmt + "}/{1}]",
+                "eta: {eta}",
+                "{meters}",
+                "time: {time}",
+            ]
+        )
         for obj in iterable:
             yield obj
             iter_time.update(time.time() - end)
             if i % print_freq == 0 or i == len(iterable):
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                print(
+                _print(
                     log_msg.format(
                         i,
                         len(iterable),
@@ -134,14 +123,10 @@ class MetricLogger(object):
             end = time.time()
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-        print(f"Total time: {total_time_str} ({total_time / len(iterable):.3f} s / it)")
+        _print(
+            f"Total time: {total_time_str} ({total_time / len(iterable):.3f} s / it)"
+        )
 
-class CustomDataset(Dataset):
-    def __init__(self, data: dict):
-        self.data = data
 
-    def __len__(self):
-        return len(self.data["config"])
-
-    def __getitem__(self, idx):
-        return {k: v[idx] for k, v in self.data.items()}
+def get_torch_device():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")

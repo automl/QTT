@@ -1,11 +1,8 @@
-from typing import Mapping, Hashable, Any
-
 from ConfigSpace import (
     Categorical,
     ConfigurationSpace,
     Constant,
     EqualsCondition,
-    Integer,
     OrConjunction,
     OrdinalHyperparameter,
 )
@@ -13,58 +10,46 @@ from ConfigSpace import (
 cs = ConfigurationSpace("cv-classification/pipeline")
 
 # finetuning parameters
-_meta: Mapping[Hashable, Any] = {"type": "hyperparameters"}
-freeze = OrdinalHyperparameter(
-    "pct_to_freeze", [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], meta=_meta
-)
-ld = OrdinalHyperparameter("layer_decay", [0.0, 0.65, 0.75], meta=_meta)
-lp = OrdinalHyperparameter("linear_probing", [False, True], meta=_meta)
-sn = OrdinalHyperparameter("stoch_norm", [False, True], meta=_meta)
-sr = OrdinalHyperparameter("sp_reg", [0.0, 0.0001, 0.001, 0.01, 0.1], meta=_meta)
-d_reg = OrdinalHyperparameter("delta_reg", [0.0, 0.0001, 0.001, 0.01, 0.1], meta=_meta)
-bss = OrdinalHyperparameter("bss_reg", [0.0, 0.0001, 0.001, 0.01, 0.1], meta=_meta)
-cot = OrdinalHyperparameter("cotuning_reg", [0.0, 0.5, 1.0, 2.0, 4.0], meta=_meta)
+freeze = OrdinalHyperparameter("pct_to_freeze", [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+ld = OrdinalHyperparameter("layer_decay", [0.0, 0.65, 0.75])
+lp = OrdinalHyperparameter("linear_probing", [False, True])
+sn = OrdinalHyperparameter("stoch_norm", [False, True])
+sr = OrdinalHyperparameter("sp_reg", [0.0, 0.0001, 0.001, 0.01, 0.1])
+d_reg = OrdinalHyperparameter("delta_reg", [0.0, 0.0001, 0.001, 0.01, 0.1])
+bss = OrdinalHyperparameter("bss_reg", [0.0, 0.0001, 0.001, 0.01, 0.1])
+cot = OrdinalHyperparameter("cotuning_reg", [0.0, 0.5, 1.0, 2.0, 4.0])
 
 # regularization parameters
-mix = OrdinalHyperparameter("mixup", [0.0, 0.2, 0.4, 1.0, 2.0, 4.0, 8.0], meta=_meta)
-mix_p = OrdinalHyperparameter("mixup_prob", [0.0, 0.25, 0.5, 0.75, 1.0], meta=_meta)
-cut = OrdinalHyperparameter("cutmix", [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0], meta=_meta)
-drop = OrdinalHyperparameter("drop", [0.0, 0.1, 0.2, 0.3, 0.4], meta=_meta)
-smooth = OrdinalHyperparameter("smoothing", [0.0, 0.05, 0.1], meta=_meta)
-clip = OrdinalHyperparameter("clip_grad", [0, 1, 10], meta=_meta)
+mix = OrdinalHyperparameter("mixup", [0.0, 0.2, 0.4, 1.0, 2.0, 4.0, 8.0])
+mix_p = OrdinalHyperparameter("mixup_prob", [0.0, 0.25, 0.5, 0.75, 1.0])
+cut = OrdinalHyperparameter("cutmix", [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0])
+drop = OrdinalHyperparameter("drop", [0.0, 0.1, 0.2, 0.3, 0.4])
+smooth = OrdinalHyperparameter("smoothing", [0.0, 0.05, 0.1])
+clip = OrdinalHyperparameter("clip_grad", [0, 1, 10])
 
-# optimization
-amp = OrdinalHyperparameter("amp", [False, True], meta=_meta)
-opt = Categorical("opt", ["sgd", "momentum", "adam", "adamw", "adamp"], meta=_meta)
+# optimization parameters
+amp = OrdinalHyperparameter("amp", [False, True])
+opt = Categorical("opt", ["sgd", "momentum", "adam", "adamw", "adamp"])
 betas = Categorical(
-    "opt_betas",
-    ["(0.9, 0.999)", "(0.0, 0.99)", "(0.9, 0.99)", "(0.0, 0.999)"],
-    meta=_meta,
+    "opt_betas", ["(0.9, 0.999)", "(0.0, 0.99)", "(0.9, 0.99)", "(0.0, 0.999)"]
 )
-lr = OrdinalHyperparameter(
-    "lr", [1e-05, 5e-05, 0.0001, 0.0005, 0.001, 0.005, 0.01], meta=_meta
-)
-w_ep = OrdinalHyperparameter("warmup_epochs", [0, 5, 10], meta=_meta)
-w_lr = OrdinalHyperparameter("warmup_lr", [0.0, 1e-05, 1e-06], meta=_meta)
-wd = OrdinalHyperparameter(
-    "weight_decay", [0, 1e-05, 0.0001, 0.001, 0.01, 0.1], meta=_meta
-)
-bs = OrdinalHyperparameter(
-    "batch_size", [2, 4, 8, 16, 32, 64, 128, 256, 512], meta=_meta
-)
-mom = OrdinalHyperparameter("momentum", [0.0, 0.8, 0.9, 0.95, 0.99], meta=_meta)
-sched = Categorical("sched", ["cosine", "step", "multistep", "plateau"], meta=_meta)
-pe = OrdinalHyperparameter("patience_epochs", [2, 5, 10], meta=_meta)
-dr = OrdinalHyperparameter("decay_rate", [0.1, 0.5], meta=_meta)
-de = OrdinalHyperparameter("decay_epochs", [10, 20], meta=_meta)
+lr = OrdinalHyperparameter("lr", [1e-05, 5e-05, 0.0001, 0.0005, 0.001, 0.005, 0.01])
+w_ep = OrdinalHyperparameter("warmup_epochs", [0, 5, 10])
+w_lr = OrdinalHyperparameter("warmup_lr", [0.0, 1e-05, 1e-06])
+wd = OrdinalHyperparameter("weight_decay", [0, 1e-05, 0.0001, 0.001, 0.01, 0.1])
+bs = OrdinalHyperparameter("batch_size", [2, 4, 8, 16, 32, 64, 128, 256, 512])
+mom = OrdinalHyperparameter("momentum", [0.0, 0.8, 0.9, 0.95, 0.99])
+sched = Categorical("sched", ["cosine", "step", "multistep", "plateau"])
+pe = OrdinalHyperparameter("patience_epochs", [2, 5, 10])
+dr = OrdinalHyperparameter("decay_rate", [0.1, 0.5])
+de = OrdinalHyperparameter("decay_epochs", [10, 20])
 da = Categorical(
     "data_augmentation",
-    ["auto_augment", "random_augment", "trivial_augment"],
-    meta=_meta,
+    ["auto_augment", "random_augment", "trivial_augment", "none"],
 )
-aa = Categorical("auto_augment", ["v0", "original"], meta=_meta)
-ra_nops = OrdinalHyperparameter("ra_num_ops", [2, 3], meta=_meta)
-ra_mag = OrdinalHyperparameter("ra_magnitude", [9, 17], meta=_meta)
+aa = Categorical("auto_augment", ["v0", "original"])
+ra_nops = OrdinalHyperparameter("ra_num_ops", [2, 3])
+ra_mag = OrdinalHyperparameter("ra_magnitude", [9, 17])
 cond_1 = EqualsCondition(pe, sched, "plateau")
 cond_2 = OrConjunction(
     EqualsCondition(dr, sched, "step"),
@@ -126,7 +111,6 @@ cs.add(
 )
 
 # model
-_meta = {"type": "model"}
 model = Categorical(
     "model",
     [
@@ -155,27 +139,9 @@ model = Categorical(
         "xcit_tiny_12_p8_384_dist",
         "xcit_tiny_24_p8_384_dist",
     ],
-    meta=_meta,
 )
 cs.add(model)
 
 # max_fidelity
 b = Constant("max_fidelity", 50)
 cs.add(b)
-
-cs.to_json("space.json", indent=2)
-
-
-########################################################################################
-######################## DEFINE THE SPACE FOR THE META-FEATURES ########################
-########################################################################################
-
-metafeat = ConfigurationSpace("cv-classification/meta-features")
-num_classes = Integer("num_classes", (1, 100))
-num_features = Integer("num_features", (1, 100))
-num_samples = Integer("num_samples", (1, 100))
-num_channels = Integer("num_channels", (1, 3))
-
-metafeat.add(num_classes, num_features, num_samples, num_channels)
-
-metafeat.to_json("meta.json", indent=2)

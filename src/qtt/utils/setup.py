@@ -11,7 +11,9 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-def setup_outputdir(path, create_dir=True, warn_if_exist=True, path_suffix=None):
+def setup_outputdir(
+    path, create_dir=True, warn_if_exist=True, path_suffix=None, timestamp=False
+):
     if path:
         assert isinstance(
             path, (str, Path)
@@ -19,26 +21,35 @@ def setup_outputdir(path, create_dir=True, warn_if_exist=True, path_suffix=None)
 
     if path_suffix is None:
         path_suffix = ""
-    if path is None:
-        path = f"qtt{path_suffix}"
-    else:
+    if path is not None:
         path = f"{path}{path_suffix}"
-
+    if path is None:
+        path = os.path.join("qtt", path_suffix)
     if create_dir:
-        for _ in range(1000):
-            try:
-                now = datetime.now()
-                timestamp = now.strftime("%y%m%d-%H%M%S")
-                _path = os.path.join(path, f"{timestamp}")
-                os.makedirs(_path, exist_ok=False)
-                path = _path
-                break
-            except FileExistsError:
-                sleep(1)
-                continue
+        if timestamp:
+            for _ in range(1000):
+                try:
+                    now = datetime.now()
+                    timestamp = now.strftime("%y%m%d-%H%M%S")
+                    _path = os.path.join(path, f"{timestamp}")
+                    os.makedirs(_path, exist_ok=False)
+                    path = _path
+
+                    break
+                except FileExistsError:
+                    sleep(1)
+                    continue
+            else:
+                raise RuntimeError("Too many jobs started at the same time.")
+            logger.log(25, f'No path specified. Models will be saved in: "{path}"')
         else:
-            raise RuntimeError("Too many jobs started at the same time.")
-        logger.log(25, f'No path specified. Models will be saved in: "{path}"')
+            try:
+                os.makedirs(path, exist_ok=True)
+                logger.log(25, f'No path specified. Models will be saved in: "{path}"')
+            except FileExistsError:
+                logger.warning(
+                    f'Warning: path already exists! This may overwrite previous runs! path="{path}"'
+                )
     elif warn_if_exist:
         if os.path.isdir(path):
             logger.warning(

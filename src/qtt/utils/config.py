@@ -19,6 +19,12 @@ def to_one_hot(hp_name, sequence):
 
 
 def encode_config_space(cs: CS.ConfigurationSpace) -> tuple[list[str], list[list[str]]]:
+    """Encode a ConfigSpace.ConfigurationSpace object into a list of one-hot
+    encoded hyperparameters.
+
+    Args:
+        cs (CS.ConfigurationSpace): A ConfigSpace.ConfigurationSpace object.
+    """
     type_dict = defaultdict(list)
     for hp in list(cs.values()):
         if isinstance(hp, CS.Constant):
@@ -46,10 +52,17 @@ def encode_config_space(cs: CS.ConfigurationSpace) -> tuple[list[str], list[list
 
 
 def config_to_vector(configs: list[CS.Configuration], one_hot):
+    """Convert a list of ConfigSpace.Configuration to a list of	
+    one-hot encoded dictionaries.
+
+    Args:
+        configs (list[CS.Configuration]): A list of ConfigSpace.Configuration objects.
+        one_hot (list[str]): One-hot encodings of the hyperparameters.
+    """
     encoded_configs = []
     for config in configs:
         config = dict(config)
-        enc_config = dict()
+        enc_config = {}
         for hp in one_hot:
             # categorical hyperparameters
             if len(hp.split("=")) > 1:
@@ -64,6 +77,13 @@ def config_to_vector(configs: list[CS.Configuration], one_hot):
     return encoded_configs
 
 def config_to_serializible_dict(config: CS.Configuration) -> dict:
+    """Convert a ConfigSpace.Configuration to a serializable dictionary.
+    Cast all values to basic types (int, float, str, bool) to ensure
+    that the dictionary is JSON serializable.
+
+    Args:
+        config (CS.Configuration): A ConfigSpace.Configuration object.
+    """
     serializable_dict = dict(config)
     for k, v in serializable_dict.items():
         if hasattr(v, "item"):

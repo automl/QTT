@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""ImageNet Training Script
-
-This is intended to be a lean and easily modifiable ImageNet training script that reproduces ImageNet
-training results with some of the latest networks and training techniques. It favours canonical PyTorch
-and standard Python style over trying to be able to 'do it all.' That said, it offers quite a few speed
-and training result improvements over the usual PyTorch example scripts. Repurpose as you see fit.
+"""PyTorch Image Training/Finetuning Script.
 
 This script was started from an early version of the PyTorch ImageNet example
 (https://github.com/pytorch/examples/tree/master/imagenet)
@@ -29,28 +24,7 @@ from functools import partial
 
 import numpy as np
 import torch
-import torch.backends.cuda as cuda
-import torch.backends.cudnn as cudnn
-import torch.nn as nn
 import torchvision.utils
-from .utils.custom_timm import create_loader
-from .utils.finetuning_stategies import (
-    BatchSpectralShrinkage,
-    BehavioralRegularization,
-    CoTuningLoss,
-    Relationship,
-    SPRegularization,
-    convert_to_stoch_norm,
-)
-from .utils.utils import (
-    compute_gradient_norm,
-    extend_metrics,
-    get_dataset_path,
-    get_icgen_dataset_info_json,
-    get_number_of_classes,
-    prepare_model_for_finetuning,
-)
-from qtt.utils.log_utils import set_logger_verbosity
 from timm import utils
 from timm.data import (
     AugMixDataset,
@@ -76,52 +50,74 @@ from timm.models import (
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
+from torch import nn
+from torch.backends import cuda, cudnn
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
+
+from qtt.utils.log_utils import set_logger_verbosity
+
+from .utils.build_parser import build_parser
+from .utils.custom_timm import create_loader
+from .utils.finetuning_stategies import (
+    BatchSpectralShrinkage,
+    BehavioralRegularization,
+    CoTuningLoss,
+    Relationship,
+    SPRegularization,
+    convert_to_stoch_norm,
+)
+from .utils.utils import (
+    compute_gradient_norm,
+    extend_metrics,
+    get_dataset_path,
+    get_icgen_dataset_info_json,
+    get_number_of_classes,
+    prepare_model_for_finetuning,
+)
 
 try:
     from apex import amp  # type: ignore
     from apex.parallel import DistributedDataParallel as ApexDDP  # type: ignore
     from apex.parallel import convert_syncbn_model  # type: ignore
 
-    has_apex = True
+    HAS_APEX = True
 except ImportError:
-    has_apex = False
+    HAS_APEX = False
 
-has_native_amp = False
+HAS_NATIVE_AMP = False
 try:
     if getattr(torch.cuda.amp, "autocast") is not None:
-        has_native_amp = True
+        HAS_NATIVE_AMP = True
 except AttributeError:
     pass
 
 try:
     import wandb  # type: ignore
 
-    has_wandb = True
+    HAS_WANDB = True
 except ImportError:
-    has_wandb = False
+    HAS_WANDB = False
 
 try:
     from functorch.compile import memory_efficient_fusion
 
-    has_functorch = True
+    HAS_FUNCTORCH = True
 except ImportError:
-    has_functorch = False
+    HAS_FUNCTORCH = False
 
 try:
     from syne_tune import Reporter  # type: ignore
 
-    has_synetune = True
+    HAS_SYNETUNE = True
 except ImportError:
-    has_synetune = False
+    HAS_SYNETUNE = False
 
 
 logger = logging.getLogger(__name__)
 
 
 def main(args: Namespace):
-    verbosity = args.verbosity if hasattr(args, "verbosity") else 1
-    set_logger_verbosity(verbosity, logger)
+    set_logger_verbosity(args.verbosity, logger)
 
     if torch.cuda.is_available():
         cuda.matmul.allow_tf32 = True
@@ -134,16 +130,16 @@ def main(args: Namespace):
             f"Process {args.rank}, total {args.world_size}, device {args.device}."
         )
     else:
-        logger.debug( f"Training with a single process on 1 device ({args.device}).")
+        logger.debug(f"Training with a single process on 1 device ({args.device}).")
     assert args.rank >= 0
 
     if utils.is_primary(args):
         logger.info("Start finetuning...")
-        args_str = [f"{k}: {v}" for k,v in dict(vars(args)).items()]
+        args_str = [f"{k}: {v}" for k, v in dict(vars(args)).items()]
         logger.debug(f"Args: {args_str}")
 
     if utils.is_primary(args) and args.log_wandb:
-        if has_wandb:
+        if HAS_WANDB:
             project_name = args.project_name
             wandb.init(project=project_name, name=args.experiment, config=args)
         else:
@@ -157,12 +153,12 @@ def main(args: Namespace):
     amp_dtype = torch.float16
     if args.amp:
         if args.amp_impl == "apex":
-            assert has_apex, "AMP impl specified as APEX but APEX is not installed."
+            assert HAS_APEX, "AMP impl specified as APEX but APEX is not installed."
             use_amp = "apex"
             assert args.amp_dtype == "float16"
         else:
             assert (
-                has_native_amp
+                HAS_NATIVE_AMP
             ), "Please update PyTorch to a version with native AMP (or use APEX)."
             use_amp = "native"
             assert args.amp_dtype in ("float16", "bfloat16")
@@ -175,7 +171,7 @@ def main(args: Namespace):
         print("------ Test Mode active ------")
         args.epochs = 1
 
-    if has_synetune and args.report_synetune:
+    if HAS_SYNETUNE and args.report_synetune:
         global report
         current_dir = os.path.dirname(os.path.realpath(__file__))
         report = Reporter()
@@ -281,7 +277,7 @@ def main(args: Namespace):
     if args.distributed and args.sync_bn:
         args.dist_bn = ""  # disable dist_bn when sync BN active
         assert not args.split_bn
-        if has_apex and use_amp == "apex":
+        if HAS_APEX and use_amp == "apex":
             # Apex SyncBN used with Apex AMP
             # WARNING this won't currently work with models using BatchNormAct2d
             model = convert_syncbn_model(model)
@@ -299,7 +295,7 @@ def main(args: Namespace):
         model = torch.jit.script(model)
 
     if args.aot_autograd:
-        assert has_functorch, "functorch is needed for --aot-autograd"
+        assert HAS_FUNCTORCH, "functorch is needed for --aot-autograd"
         model = memory_efficient_fusion(model)  # type: ignore
 
     if args.lr is None:
@@ -373,16 +369,16 @@ def main(args: Namespace):
         model, optimizer = amp.initialize(model, optimizer, opt_level="O1")
         loss_scaler = ApexScaler()
         if utils.is_primary(args):
-            logger.debug( "Using NVIDIA APEX AMP. Training in mixed precision.")
+            logger.debug("Using NVIDIA APEX AMP. Training in mixed precision.")
     elif use_amp == "native":
         amp_autocast = partial(torch.autocast, device_type=device.type, dtype=amp_dtype)
         if device.type == "cuda":
             loss_scaler = NativeScaler()
         if utils.is_primary(args):
-            logger.debug( "Using native Torch AMP. Training in mixed precision.")
+            logger.debug("Using native Torch AMP. Training in mixed precision.")
     else:
         if utils.is_primary(args):
-            logger.debug( "AMP not enabled. Training in float32.")
+            logger.debug("AMP not enabled. Training in float32.")
 
     # optionally resume from a checkpoint
     resume_epoch = None
@@ -409,14 +405,14 @@ def main(args: Namespace):
 
     # setup distributed training
     if args.distributed:
-        if has_apex and use_amp == "apex":
+        if HAS_APEX and use_amp == "apex":
             # Apex DDP preferred unless native amp is activated
             if utils.is_primary(args):
-                logger.debug( "Using NVIDIA APEX DistributedDataParallel.")
+                logger.debug("Using NVIDIA APEX DistributedDataParallel.")
             model = ApexDDP(model, delay_allreduce=True)
         else:
             if utils.is_primary(args):
-                logger.debug( "Using native Torch DistributedDataParallel.")
+                logger.debug("Using native Torch DistributedDataParallel.")
             model = NativeDDP(
                 model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb
             )
@@ -607,7 +603,7 @@ def main(args: Namespace):
             args.output if args.output else "./output/train", exp_name
         )
 
-        if has_synetune and args.report_synetune:
+        if HAS_SYNETUNE and args.report_synetune:
             # report = Reporter()
             output_dir = args.st_checkpoint_dir
             os.makedirs(output_dir, exist_ok=True)
@@ -692,7 +688,7 @@ def main(args: Namespace):
 
             if args.distributed and args.dist_bn in ("broadcast", "reduce"):
                 if utils.is_primary(args):
-                    logger.debug( "Distributing BatchNorm running means and vars")
+                    logger.debug("Distributing BatchNorm running means and vars")
                 utils.distribute_bn(model, args.world_size, args.dist_bn == "reduce")
 
             eval_metrics = validate(
@@ -705,7 +701,7 @@ def main(args: Namespace):
                 return_source_output=return_source_output,
             )
 
-            if has_synetune and args.report_synetune:
+            if HAS_SYNETUNE and args.report_synetune:
                 report(epoch=epoch + 1, eval_accuracy=eval_metrics["top1"])  # type: ignore
 
             if model_ema is not None and not args.model_ema_force_cpu:
@@ -735,7 +731,7 @@ def main(args: Namespace):
                     filename=os.path.join(output_dir, "summary.csv"),
                     lr=sum(lrs) / len(lrs),
                     write_header=best_metric is None,
-                    log_wandb=args.log_wandb and has_wandb,
+                    log_wandb=args.log_wandb and HAS_WANDB,
                 )
 
             out["score"] = eval_metrics["top1"] / 100.0
@@ -1065,3 +1061,9 @@ def validate(
     )
 
     return metrics
+
+
+def finetune():
+    parser = build_parser()
+    args = parser.parse_args()
+    main(args)
