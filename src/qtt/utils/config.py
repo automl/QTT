@@ -52,7 +52,7 @@ def encode_config_space(cs: CS.ConfigurationSpace) -> tuple[list[str], list[list
 
 
 def config_to_vector(configs: list[CS.Configuration], one_hot):
-    """Convert a list of ConfigSpace.Configuration to a list of	
+    """Convert a list of ConfigSpace.Configuration to a list of
     one-hot encoded dictionaries.
 
     Args:
@@ -75,6 +75,7 @@ def config_to_vector(configs: list[CS.Configuration], one_hot):
             enc_config[hp] = val
         encoded_configs.append(enc_config)
     return encoded_configs
+
 
 def config_to_serializible_dict(config: CS.Configuration) -> dict:
     """Convert a ConfigSpace.Configuration to a serializable dictionary.

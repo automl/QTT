@@ -27,44 +27,26 @@ pip install -e QTT
 ```
 
 ## Basic Usage
-With this repo, we provide pretrained models for quick testing. 
+We provide a simple to use script.
 
 ```python
-from qtt import QuickTuner, get_pretrained_optimizer
-from qtt.finetune.cv.classification import finetune_script, extract_task_info_metafeat
-
-# specify the path to the dataset here
-# it will extract the meta-features and create two dictionaries for the optimizer and tuner/finetune_script
-task_info, metafeat = extract_task_info_metafeat("path/to/dataset")
-
-# load a pretrained optimizer
-optimizer = get_pretrained_optimizer("mtlbm/micro")
-# setup the optimizer
-n = 100  # number of configs to sample
-optimizer.setup(n, metafeat)
-
-# setup and run the tuner
-qt = QuickTuner(optimizer, finetune_script)  # pass the optimizer and objective function
-qt.run(task_info=task_info, time_budget=3600)  # run for 1 hour
+from qtt import QuickCVCLSTuner
+tuner = QuickCVCLSTuner("path/to/dataset")
+tuner.run(fevals=100, time_budget=3600)
 ```
 
-The custom dataset must be in Pytorch's [ImageFolder](https://pytorch.org/vision/main/generated/torchvision.datasets.ImageFolder.html) format, e.g. download the Imagenette dataset:
-```bash
-wget https://s3.amazonaws.com/fast-ai-imageclas/imagenette2-320.tgz
-tar -xvzf imagenette2-320.tgz
-```
-
-Modify the quicktuning [script](examples/quicktuning.py) in the examples folder to your needs.
+For more code examples take a look into the notebooks [folder](notebooks).
 
 
 ## Advanced Usage
 ### Download the QuickTune Meta-Album-Dataset:
 ```bash
-wget https://nextcloud.tf.uni-freiburg.de/index.php/s/7xMKQsiEGE3je5R/download/mtlbm.zip
+wget https://nextcloud.tf.uni-freiburg.de/index.php/s/fQmPmB84EmwxddJ/download/mtlbm.zip
 unzip mtlbm.zip
 ```
+The Meta-Dataset consists of learning curves generated with different vision datasets of the [Meta Album](https://meta-album.github.io/). They are divided into three different groups: `micro`, ``mini`` and ``extended``.
 
-And modify the meta-training [script](examples/metatrain.py) in the examples folder to your needs.
+If you want to train your own predictors, take a look at the examples folder and modify the [script](examples/metatrain.py) to your needs.
 
 ## References
 

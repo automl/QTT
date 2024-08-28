@@ -37,7 +37,8 @@ where = ["src"]
 "*" = ["*.*"]
 
 [project.scripts]
-finetune = "qtt.finetune.cv.classification.finetune:finetune"
+train = "qtt.finetune.cv.classification.train:main_cli"
+validate = "qtt.finetune.cv.classification.validate:main_cli"
 
 [project.urls]
 Homepage = "https://github.com/automl/QTT"

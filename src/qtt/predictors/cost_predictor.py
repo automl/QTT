@@ -10,16 +10,21 @@ from sklearn import preprocessing
 from torch.utils.data import DataLoader, random_split
 
 from ..utils.log_utils import set_logger_verbosity
-from .abstract import AbstractPredictor
-from .data import SimpleTorchTabularDataset, create_preprocessor, get_feature_mapping
+from .predictor import Predictor
+from .data import (
+    SimpleTorchTabularDataset,
+    create_preprocessor,
+    get_feature_mapping,
+    get_types_of_features,
+)
 from .models import MLP
 from .utils import MetricLogger, get_torch_device
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_FIT_PARAMS = {
-    "learning_rate_init": 0.0005,
-    "batch_size": 2048,
+    "learning_rate_init": 0.0001,
+    "batch_size": 1024,
     "max_iter": 100,
     "early_stop": True,
     "patience": 5,
@@ -27,18 +32,8 @@ DEFAULT_FIT_PARAMS = {
     "tol": 1e-4,
 }
 
-# DEFAULT_REFIT_PARAMS = {
-#     "learning_rate_init": 0.0001,
-#     "batch_size": 128,
-#     "max_iter": 10,
-#     "early_stop": True,
-#     "patience": 3,
-#     "validation_fraction": 0.1,
-#     "tol": 1e-4,
-# }
 
-
-class CostPredictor(AbstractPredictor):
+class CostPredictor(Predictor):
     temp_file_name = "temp_model.pt"
 
     def __init__(
@@ -52,9 +47,6 @@ class CostPredictor(AbstractPredictor):
         super().__init__(path=path)
 
         self.fit_params = self._validate_fit_params(fit_params, DEFAULT_FIT_PARAMS)
-        # self.refit_params = self._validate_fit_params(
-        #     refit_params, DEFAULT_REFIT_PARAMS
-        # )
         self.seed = seed
         self.verbose = verbosity
 
@@ -83,39 +75,12 @@ class CostPredictor(AbstractPredictor):
         model = SimpleMLPRegressor(**params)
         return model
 
-    def _get_types_of_features(self, df):
-        continous_features = list(df.select_dtypes(include=["number"]).columns)
-        categorical_features = list(df.select_dtypes(include=["object"]).columns)
-        bool_features = list(df.select_dtypes(include=["bool"]).columns)
-        valid_features = continous_features + categorical_features + bool_features
-
-        if len(valid_features) != df.shape[1]:
-            unknown_features = [col for col in df.columns if col not in valid_features]
-            logger.warning(
-                f"Features {unknown_features} have unknown dtypes and are dropped"
-            )
-            df = df.drop(columns=unknown_features)
-
-        features_to_drop = df.columns[df.isna().all()].tolist()
-        if features_to_drop:
-            logger.warning(
-                f"Features {features_to_drop} have only NaN values and are dropped"
-            )
-            df = df.drop(columns=features_to_drop)
-
-        types_of_features = {"continuous": [], "categorical": [], "bool": []}
-        for col in df.columns:
-            if col in continous_features:
-                types_of_features["continuous"].append(col)
-            elif col in categorical_features:
-                types_of_features["categorical"].append(col)
-            elif col in bool_features:
-                types_of_features["bool"].append(col)
-        return types_of_features, df
-
     def _validate_fit_data(self, X, y):
-        if not isinstance(X, pd.DataFrame) or not isinstance(y, np.ndarray):
-            raise ValueError("X and y must be pandas.DataFrame instances")
+        if not isinstance(X, pd.DataFrame):
+            raise ValueError("X must be a pandas.DataFrame instance")
+
+        if not isinstance(y, np.ndarray):
+            raise ValueError("y must be a numpy.ndarray instance")
 
         if X.shape[0] != y.shape[0]:
             raise ValueError("X and y must have the same number of samples")
@@ -137,20 +102,13 @@ class CostPredictor(AbstractPredictor):
                 "Column names are not unique, please change duplicated column names (in pandas: train_data.rename(columns={'current_name':'new_name'})"
             )
 
-    def _preprocess_fit_data(self, df: pd.DataFrame):
+    def _preprocess_fit_data(self, df: pd.DataFrame, array: np.ndarray):
         """
         Process data for fitting the model.
         """
         self._original_features = list(df.columns)
-        drop_columns = [col for col in df.columns if df[col].nunique() == 1]
-        if len(drop_columns) > 0:
-            logger.warning(
-                f"Columns {drop_columns} have only one unique value and are ignored"
-            )
-            df.drop(columns=drop_columns, inplace=True)
-        self._drop_features = drop_columns
 
-        self.types_of_features, df = self._get_types_of_features(df)
+        df, self.types_of_features, self.features_to_drop = get_types_of_features(df)
         self._input_features = list(df.columns)
         continous_features = self.types_of_features["continuous"]
         categorical_features = self.types_of_features["categorical"]
@@ -168,7 +126,10 @@ class CostPredictor(AbstractPredictor):
                 "Number of columns in df array does not match feature_mapping."
             )
 
-        return out
+        self.label_scaler = preprocessing.StandardScaler()  #MaxAbsScaler()
+        out_array = self.label_scaler.fit_transform(array)
+
+        return out, out_array
 
     def _preprocess_predict_data(self, df: pd.DataFrame, fill_missing=True):
         unexpected_columns = set(df.columns) - set(self._original_features)
@@ -178,7 +139,7 @@ class CostPredictor(AbstractPredictor):
                 f"{unexpected_columns}"
             )
 
-        df = df.drop(columns=self._drop_features, errors="ignore")
+        df = df.drop(columns=self.features_to_drop, errors="ignore")
 
         missing_columns = set(self._input_features) - set(df.columns)
         if len(missing_columns) > 0:
@@ -256,7 +217,10 @@ class CostPredictor(AbstractPredictor):
             bs = min(batch_size, int(2 ** (3 + np.floor(np.log10(len(val_set))))))
             val_loader = DataLoader(val_set, batch_size=bs)
 
-        temp_save_file_path = os.path.join(self.path, self.temp_file_name)
+        cache_dir = os.path.expanduser("~/.cache")
+        cache_dir = os.path.join(cache_dir, "qtt", self.name)
+        os.makedirs(cache_dir, exist_ok=True)
+        temp_save_file_path = os.path.join(cache_dir, self.temp_file_name)
         for it in range(1, max_iter + 1):
             self.model.train()
 
@@ -303,8 +267,8 @@ class CostPredictor(AbstractPredictor):
                 else:
                     patience_counter += 1
                 logger.info(
-                    f"ITER: {it}/{max_iter}  "
                     f"VAL: {round(val_metric, 4)}  "
+                    f"ITER: {it}/{max_iter}  "
                     f"BEST: {round(best_val_metric, 4)} ({best_iter})"
                 )
                 if patience_counter >= patience:
@@ -327,10 +291,9 @@ class CostPredictor(AbstractPredictor):
             raise AssertionError("Predictor is already fit! Create a new one.")
 
         self._validate_fit_data(X, y)
-        x = self._preprocess_fit_data(X)
-        self.label_scaler = preprocessing.PowerTransformer("box-cox")
-        y = self.label_scaler.fit_transform(y)
-        train_dataset = SimpleTorchTabularDataset(x, y)
+        _X, _y = self._preprocess_fit_data(X, y)
+
+        train_dataset = SimpleTorchTabularDataset(_X, _y)
 
         self.model = self._get_model()
 
@@ -353,10 +316,9 @@ class CostPredictor(AbstractPredictor):
         x_t = torch.tensor(x, dtype=torch.float32).to(device)
 
         with torch.no_grad():
-            pred = self.model.predict(x_t).cpu().numpy()
-        pred = self.label_scaler.inverse_transform(pred)
-        pred = np.array(pred)
-        return pred
+            pred = self.model.predict(x_t)
+        out = pred.cpu().squeeze().numpy()
+        return out
 
     def save(self, path: str | None = None, verbose=True) -> str:
         # Save on CPU to ensure the model can be loaded on a box without GPU
@@ -422,7 +384,7 @@ class SimpleMLPRegressor(torch.nn.Module):
 
         self.head = MLP(enc_dims, 1, enc_nlayers, enc_hidden_dim, act_fn=nn.GELU)
 
-    def forward(self, X):
+    def forward(self, X) -> torch.Tensor:
         x = []
         start = 0
         for i, dim in enumerate(self.in_dim):
@@ -432,12 +394,13 @@ class SimpleMLPRegressor(torch.nn.Module):
             start = end
         x = torch.cat(x, dim=1)
         x = self.head(x)
+        # x = torch.nn.functional.relu(x)
         return x
 
-    def predict(self, X):
+    def predict(self, X) -> torch.Tensor:
         return self(X)
 
-    def train_step(self, X, y):
+    def train_step(self, X, y) -> torch.Tensor:
         pred = self(X)
         loss = torch.nn.functional.huber_loss(pred, y)
         return loss

@@ -1,8 +1,10 @@
 import os
 import time
 
-from . import finetune
-from .utils.build_parser import build_parser
+import pandas as pd
+import yaml
+
+from . import train
 
 hp_list = [
     "batch_size",
@@ -62,10 +64,9 @@ def finetune_script(
 ):
     config = dict(job["config"])
     config_id = job["config_id"]
-    epochs_step = job["fidelity"]
+    fidelity = job["fidelity"]
     data_path = task_info["data-path"]
-    output = task_info.get("output-path", "./output")
-    verbosity = task_info.get("verbosity", 2)
+    output_path = task_info.get("output-path", ".")
 
     args = [data_path]
     # REGULAR HPS/ARGS
@@ -114,39 +115,46 @@ def finetune_script(
     for arg in task_args:
         args += [f"--{arg}", str(task_info[arg])]
 
-    args += ["--epochs_step", str(epochs_step)]
+    args += ["--fidelity", str(fidelity)]
     args += ["--experiment", str(config_id)]
-    args += ["--output", output]
+    args += ["--output", output_path]
 
     # OUTPUT DIRECTORY
-    output = os.path.join(output, str(config_id))
-    resume_path = os.path.join(output, "last.pth.tar")
+    output_dir = os.path.join(output_path, str(config_id))
+    resume_path = os.path.join(output_dir, "last.pth.tar")
     if os.path.exists(resume_path):
         args += ["--resume", resume_path]
 
     args += static_args
 
-    parser = build_parser()
+    parser = train.build_parser()
     args, _ = parser.parse_known_args(args)
-    args.verbosity = verbosity
-    
+    args_text = yaml.safe_dump(args.__dict__)
+
     start = time.time()
     try:
-        metrics = finetune.main(args)
+        result = train.main(args, args_text)
     except Exception as e:
-        print("Error:", e)
-        result = job.copy()
-        result["score"] = 0
-        result["cost"] = float("inf")
-        result["status"] = False
-        result["info"] = str(e)
-        return result
-    cost = time.time() - start
+        result = e
+    end = time.time()
+    try:
+        summary = pd.read_csv(os.path.join(output_dir, "summary.csv"))
+        eval_top1 = summary["eval_top1"].iloc[-1]
+    except FileNotFoundError:
+        result = "No summary.csv found"
 
-    result = job.copy()
-    result["score"] = metrics["score"]
-    result["cost"] = cost
-    result["status"] = True
-    result["info"] = metrics
+    if result is not None:
+        report = job.copy()
+        report["score"] = 0
+        report["cost"] = end - start
+        report["status"] = False
+        report["info"] = result
+        return report
 
-    return result
+    report = job.copy()
+    report["score"] = eval_top1 / 100
+    report["cost"] = end - start
+    report["status"] = True
+    report["info"] = {"output_dir": output_dir}
+
+    return report

@@ -26,7 +26,7 @@ class FeatureEncoder(nn.Module):
         for dim in self.in_dim:
             encoder.append(MLP(dim, enc_out_dim, enc_nlayers, enc_hidden_dim))
         self.config_encoder = encoder
-        enc_dims = len(self.config_encoder) * enc_out_dim
+        enc_dims += len(self.config_encoder) * enc_out_dim
 
         # build curve encoder
         self.curve_encoder = MLP(in_curve_dim, out_curve_dim, enc_nlayers, enc_hidden_dim)
@@ -44,6 +44,10 @@ class FeatureEncoder(nn.Module):
             x.append(output)
             start = end
         x = torch.cat(x, dim=1)
+
+        # budget = (curve > 0).sum(dim=-1, keepdim=True) + 1
+        # budget /= curve.shape[-1]
+        # x = torch.cat([x, budget], dim=1)
 
         # encode curve
         out = self.curve_encoder(curve)

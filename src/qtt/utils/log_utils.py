@@ -1,8 +1,6 @@
 import logging
 from typing import Optional
 
-# _logger_ = logging.getLogger("qtt")
-
 
 def verbosity2loglevel(verbosity):
     """Translates verbosity to logging level. Suppresses warnings if verbosity = 0."""
@@ -67,7 +65,7 @@ def add_log_to_file(
 #         _logger_.propagate = False
 
 def setup_default_logging(
-    default_level=logging.WARN,
+    default_level=logging.INFO,
     fmt: Optional[str] = None,
     datefmt: Optional[str] = None,
 ):

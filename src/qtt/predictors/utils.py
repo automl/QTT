@@ -1,4 +1,5 @@
 import datetime
+from functools import partial
 import time
 from collections import defaultdict, deque
 
@@ -90,7 +91,7 @@ class MetricLogger(object):
         i = 1
         if not header:
             header = ""
-        _print = print if logger is None else logger.info
+        _print = print if logger is None else partial(logger.log, 15)
         start_time = time.time()
         end = time.time()
         iter_time = SmoothedValue(fmt="{avg:.3f}")

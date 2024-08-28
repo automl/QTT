@@ -1,5 +1,6 @@
 from collections import OrderedDict
 
+import logging
 import numpy as np
 import pandas as pd
 import torch
@@ -9,6 +10,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from torch.utils.data import Dataset
 
+logger = logging.getLogger(__name__)
+
 
 def _custom_combiner(input_feature, category):
     return str(input_feature) + "=" + str(category)
@@ -17,34 +20,75 @@ def _custom_combiner(input_feature, category):
 def create_preprocessor(continous_features, categorical_features, bool_features):
     transformers = []
     if continous_features:
-        continous_transformer = Pipeline(
+        pipeline = Pipeline(
             steps=[
                 ("imputer", SimpleImputer(strategy="constant", fill_value=0)),
                 ("scaler", StandardScaler()),
             ]
         )
-        transformers.append(("continuous", continous_transformer, continous_features))
+        transformers.append(("continuous", pipeline, continous_features))
     if categorical_features:
-        categorical_transformer = Pipeline(
+        pipeline = Pipeline(
             steps=[
                 (
                     "onehot",
                     OneHotEncoder(
                         handle_unknown="ignore",
+                        sparse_output=False,
                         feature_name_combiner=_custom_combiner,  # type: ignore
                     ),
                 )
             ]
         )
-        transformers.append(
-            ("categorical", categorical_transformer, categorical_features)
-        )
-
+        transformers.append(("categorical", pipeline, categorical_features))
+    if bool_features:
+        pipeline = Pipeline(steps=[("scaler", StandardScaler())])
+        transformers.append(("bool", pipeline, bool_features))
     return ColumnTransformer(
         transformers=transformers,
         remainder="passthrough",
         force_int_remainder_cols=False,  # type: ignore
     )
+
+
+def get_types_of_features(df: pd.DataFrame) -> tuple[pd.DataFrame, dict, list]:
+    """Returns dict with keys: 'continuous', 'categorical', 'bool'.
+    Values = list of feature-names falling into each category.
+    Each value is a list of feature-names corresponding to columns in original dataframe.
+    """
+    unique_features = [col for col in df.columns if df[col].nunique() == 1]
+    if unique_features:
+        logger.info(
+            f"Features {unique_features} have only one unique value and are dropped"
+        )
+        df.drop(columns=unique_features, inplace=True)
+
+    nan_features = df.columns[df.isna().all()].tolist()
+    if nan_features:
+        logger.info(f"Features {nan_features} have only NaN values and are dropped")
+        df = df.drop(columns=nan_features)
+
+    continous_features = list(df.select_dtypes(include=["number"]).columns)
+    categorical_features = list(df.select_dtypes(include=["object"]).columns)
+    bool_features = list(df.select_dtypes(include=["bool"]).columns)
+    valid_features = continous_features + categorical_features + bool_features
+
+    unknown_features = [col for col in df.columns if col not in valid_features]
+    if unknown_features:
+        logger.info(f"Features {unknown_features} have unknown dtypes and are dropped")
+        df = df.drop(columns=unknown_features)
+
+    types_of_features = {"continuous": [], "categorical": [], "bool": []}
+    for col in df.columns:
+        if col in continous_features:
+            types_of_features["continuous"].append(col)
+        elif col in categorical_features:
+            types_of_features["categorical"].append(col)
+        elif col in bool_features:
+            types_of_features["bool"].append(col)
+
+    features_to_drop = unique_features + nan_features + unknown_features
+    return df, types_of_features, features_to_drop
 
 
 def get_feature_mapping(processor):
