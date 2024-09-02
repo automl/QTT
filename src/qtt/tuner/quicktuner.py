@@ -315,4 +315,5 @@ class QuickTuner:
             self.inc_score,
             self.inc_fidelity,
             self.inc_cost,
+            self.inc_info,
         )

@@ -155,6 +155,6 @@ def finetune_script(
     report["score"] = eval_top1 / 100
     report["cost"] = end - start
     report["status"] = True
-    report["info"] = {"output_dir": output_dir}
+    report["info"] = {"path": output_dir}
 
     return report
