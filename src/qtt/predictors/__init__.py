@@ -1,5 +1,5 @@
 from .cost_predictor import CostPredictor
-from .dyhpo import DyHPO
+from .perf_predictor import PerfPredictor
 from .predictor import Predictor
 
-__all__ = ["DyHPO", "CostPredictor", "Predictor"]
+__all__ = ["PerfPredictor", "CostPredictor", "Predictor"]

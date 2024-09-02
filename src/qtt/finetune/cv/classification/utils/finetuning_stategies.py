@@ -163,7 +163,7 @@ class Relationship(object):
     """
 
     def __init__(self, data_loader, classifier, device, cache=None):
-        super(Relationship, self).__init__()
+        super().__init__()
         self.data_loader = data_loader
         self.classifier = classifier
         self.device = device
@@ -200,8 +200,7 @@ class Relationship(object):
         with torch.no_grad():
             for x, label in self.data_loader:
                 x = x.to(self.device)
-                y_s, _, _ = self.classifier(x)
-
+                y_s, b, c = self.classifier(x)
                 source_predictions.append(F.softmax(y_s, dim=1).detach().cpu().numpy())
                 target_labels.append(label.cpu().numpy())
 
@@ -252,10 +251,10 @@ def convert_to_stoch_norm(module, p=0.5):
     ):
         if isinstance(module, pth_module):
             mod = stoch_module(
-                module.num_features, module.eps, module.momentum, module.affine, p
+                module.num_features, module.eps, module.momentum, module.affine, p  # type: ignore
             )
-            mod.running_mean = module.running_mean
-            mod.running_var = module.running_var
+            mod.running_mean = module.running_mean  # type: ignore
+            mod.running_var = module.running_var  # type: ignore
 
             if module.affine and module.weight.requires_grad:
                 mod.weight.data = module.weight.data.clone().detach()

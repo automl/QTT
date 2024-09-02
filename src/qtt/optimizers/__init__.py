@@ -1,10 +1,9 @@
-from .optimizer import BaseOptimizer
+from .optimizer import Optimizer
 from .quick import QuickOptimizer
 from .random import RandomOptimizer
-from .utils import get_pretrained_optimizer
 
 __all__ = [
-    "BaseOptimizer",
+    "Optimizer",
     "QuickOptimizer",
     "RandomOptimizer",
     "get_pretrained_optimizer",

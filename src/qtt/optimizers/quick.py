@@ -1,48 +1,86 @@
 import logging
-import pickle
-from pathlib import Path
 from typing import Literal, Mapping
 
 import numpy as np
 import pandas as pd
-import torch
 from ConfigSpace import Configuration, ConfigurationSpace
 from scipy.stats import norm
 
-from ..data import MetaDataset
-from ..utils import encode_config_space, fix_random_seeds, set_logger_verbosity
-from .optimizer import BaseOptimizer
-from ..predictors import CostPredictor, DyHPO, Predictor
+from ..predictors import CostPredictor, PerfPredictor
+from ..utils import fix_random_seeds, set_logger_verbosity
+from .optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
 
-IGNORE_SAVE_LOAD_VARS = [
-    "cs",
-    "meta",
-    "dev",
-    "cost_predictor",
-    "perf_predictor",
-]
 
+class QuickOptimizer(Optimizer):
+    """QuickOptimizer implements a cost-aware Bayesian optimization approach with an ask
+    and tell interface. It uses a DyHPO predictor for performance and a simple MLP for
+    cost.
 
-class QuickOptimizer(BaseOptimizer):
+    Args:
+        cs (ConfigurationSpace): The configuration space to optimize over.
+        max_fidelity (int): The maximum fidelity to optimize. Fidelity is a measure of
+            a resource used by a configuration, such as the number of epochs.
+        perf_predictor (PerfPredictor, optional): The performance predictor to use. If
+            None, a new predictor is created.
+        cost_predictor (CostPredictor, optional): The cost predictor to use. If None,
+            a new CostPredictor is created if `cost_aware` is True.
+        cost_aware (bool, optional): Whether to use the cost predictor. Defaults to False.
+        cost_factor (float, optional): A factor to control the scaling of cost values.
+            Values must be in the range `[0.0, inf)`. A cost factor smaller than 1
+            compresses the cost values closer together (with 0 equalizing them), while
+            values larger than 1 expand them. Defaults to 1.0.
+        acq_fn (str, optional): The acquisition function to use. One of ["ei", "ucb",
+            "thompson", "exploit"]. Defaults to "ei".
+        explore_factor (float, optional): The exploration factor in the acquisition
+            function. Defaults to 1.0.
+        patience (int, optional): Determines if early stopping should be applied for a
+            single configuration. If the score does not improve for `patience` steps,
+            the configuration is stopped. Defaults to None.
+        tol (float, optional): Tolerance for early stopping. Training stops if the score
+            does not improve by at least `tol` for `patience` iterations (if set). Values
+            must be in the range `[0.0, inf)`. Defaults to 0.0.
+        score_thresh (float, optional): Threshold for early stopping. If the score is
+            above `1 - score_thresh`, the configuration is stopped. Defaults to 0.0.
+        init_random_search_steps (int, optional): Number of configurations to evaluate
+            randomly at the beginning of the optimization (with fidelity 1) before using
+            predictors/acquisition function. Defaults to 10.
+        refit_init_steps (int, optional): Number of steps (successful evaluations) before
+            refitting the predictors. Defaults to 0.
+        refit (bool, optional): Whether to refit the predictors with observed data.
+            Defaults to False.
+        refit_interval (int, optional): Interval for refitting the predictors. Defaults
+            to 1.
+        path (str, optional): Path to save the optimizer state. Defaults to None.
+        seed (int, optional): Seed for reproducibility. Defaults to None.
+        verbosity (int, optional): Verbosity level for logging. Defaults to 2.
+    """
+
     def __init__(
         self,
         cs: ConfigurationSpace,
-        meta: ConfigurationSpace | None = None,
+        max_fidelity: int,
+        perf_predictor: PerfPredictor | None = None,
+        cost_predictor: CostPredictor | None = None,
         *,
         cost_aware: bool = False,
+        cost_factor: float = 1.0,
         acq_fn: Literal["ei", "ucb", "thompson", "exploit"] = "ei",
         explore_factor: float = 0.0,
-        n_iter_no_change: int | None = None,
+        patience: int | None = None,
         tol: float = 1e-4,
         score_thresh: float = 0.0,
-        init_random_search_steps: int = 10,
+        init_random_search_steps: int = 3,
+        refit_init_steps: int = 0,
+        refit: bool = False,
+        refit_interval: int = 1,
         #
-        device: str | None = None,
+        path: str | None = None,
         seed: int | None = None,
         verbosity: int = 2,
     ):
+        super().__init__(path=path)
         set_logger_verbosity(verbosity, logger)
         self.verbosity = verbosity
 
@@ -50,177 +88,152 @@ class QuickOptimizer(BaseOptimizer):
             fix_random_seeds(seed)
         self.seed = seed
 
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.dev = torch.device(device)
-
         # configuration space
         self.cs = cs
-        self.meta = meta
-        self.max_fidelity = int(cs["max_fidelity"].default_value)
-
-        cs_enc, cs_splits = encode_config_space(cs)
-        self.cs_encoding = cs_enc
-        self.cs_splits = cs_splits
-        if meta is not None:
-            cs_meta_enc, _ = encode_config_space(meta)
-            self.cs_meta_enc = cs_meta_enc
-        else:
-            self.cs_meta_enc = None
-
-        self.metafeat: np.ndarray | None = None
-        self.config_norm: pd.DataFrame | None = None
-        self.metafeat_norm: pd.DataFrame | None = None
+        self.max_fidelity = max_fidelity
 
         # optimizer related parameters
         self.acq_fn = acq_fn
         self.explore_factor = explore_factor
         self.cost_aware = cost_aware
-        self.n_iter_no_change = n_iter_no_change
+        self.cost_factor = cost_factor
+        self.patience = patience
         self.tol = tol
         self.scr_thr = score_thresh
+        self.refit_init_steps = refit_init_steps
+        self.refit = refit
+        self.refit_interval = refit_interval
 
         # predictors
-        model_kwargs = self.get_model_kwargs()
-        self.perf_predictor = DyHPO(**model_kwargs)
-        self.perf_predictor.to(self.dev)
-        self.cost_predictor: Predictor | None = None
-        if self.cost_aware:
-            self.cost_predictor = CostPredictor(**model_kwargs)
-            self.cost_predictor.to(self.dev)
-        self.model_kwargs = model_kwargs
+        self.perf_predictor = perf_predictor
+        if self.perf_predictor is None:
+            self.perf_predictor = PerfPredictor(path=path)
+        self.cost_predictor = cost_predictor
+        if self.cost_aware and self.cost_predictor is None:
+            self.cost_predictor = CostPredictor(path=path)
 
         # trackers
         self.init_random_search_steps = init_random_search_steps
-        self.iteration = 0
         self.ask_count = 0
         self.tell_count = 0
         self.init_count = 0
         self.eval_count = 0
-        self.candidates: list[Configuration] = []
-        self.configs = []
+        self.configs: list[Configuration] = []
         self.evaled = set()
         self.stoped = set()
         self.failed = set()
         self.history = []
 
-        self._setup_run = False
+        # placeholders
+        self.pipelines: pd.DataFrame
+        self.curves: np.ndarray
+        self.fidelities: np.ndarray
+        self.costs: np.ndarray
+        self.score_history: np.ndarray | None = None
 
-    def get_model_kwargs(self) -> dict:
-        config_dim = [len(s) for s in self.cs_splits]
-        curve_dim = self.max_fidelity
-        meta_dim = len(self.cs_meta_enc) if self.cs_meta_enc is not None else None
-        kwargs = {
-            "in_dim": config_dim,
-            "in_curve_dim": curve_dim,
-            "in_metafeat_dim": meta_dim,
-        }
-        return kwargs
-
-    def _config_to_vector(self, configs: list[Configuration]) -> np.ndarray:
-        df = pd.DataFrame(configs, columns=self.cs_encoding)
-        df.fillna(0, inplace=True)
-
-        if self.config_norm is not None:
-            mean = self.config_norm.loc["mean"]
-            std = self.config_norm.loc["std"]
-            df = (df - mean) / std
-
-        df = df[self.cs_encoding]  # assert columns order
-        return df.to_numpy(dtype=float)
+        # flags
+        self.ready = False
+        self.finished = False
 
     def setup(
         self,
         n: int,
         metafeat: Mapping[str, int | float] | None = None,
-    ):
+    ) -> None:
+        """Setup the optimizer for optimization.
+
+        Create the configurations to evaluate. The configurations are sampled from the
+        configuration space. Optionally, metafeatures of the dataset can be provided.
+
+        Args:
+            n (int): The number of configurations to create.
+            metafeat (Mapping[str, int | float], optional): The metafeatures of the dataset.
+        """
         self.N = n
         self.fidelities: np.ndarray = np.zeros(n, dtype=int)
-        self.curves: np.ndarray = np.zeros((n, self.max_fidelity), dtype=float)
-        self.costs: np.ndarray = np.full(n, np.nan, dtype=float)
-        if self.n_iter_no_change is not None:
-            self._score_history = np.zeros((n, self.n_iter_no_change), dtype=float)
+        self.curves: np.ndarray = np.full((n, self.max_fidelity), np.nan, dtype=float)
+        self.costs = np.ones(self.N, dtype=float)
+        if self.patience is not None:
+            self.score_history = np.zeros((n, self.patience), dtype=float)
 
         if self.seed is not None:
             self.cs.seed(self.seed)
-        self.candidates = self.cs.sample_configuration(n)
-        self.configs = self._config_to_vector(self.candidates)
+        self.configs = self.cs.sample_configuration(n)
+        cfg_dict = [dict(c) for c in self.configs]
+        self.pipelines = pd.DataFrame(cfg_dict)
 
-        if self.cs_meta_enc is not None and metafeat is None:
-            raise ValueError("metafeatures not given")
-        elif self.cs_meta_enc is None and metafeat is not None:
-            logger.warning("metafeatures given but not used in this optimization")
-        elif self.cs_meta_enc is not None and metafeat is not None:
-            _meta = {k: v for k, v in metafeat.items() if k in self.cs_meta_enc}
-            _meta = pd.DataFrame(_meta, index=[0])
-
-            if self.metafeat_norm is not None:
-                mean = self.metafeat_norm.loc["mean"]
-                std = self.metafeat_norm.loc["std"]
-                _meta = (_meta - mean) / std
-                self.metafeat = _meta.to_numpy(dtype=float)
-
-        self._setup_run = True
-
-    def _get_history_data(self):
-        idx = np.array(list(self.evaled), dtype=int)
-        config = self.configs[idx]
-        fidelity = self.fidelities[idx] / self.max_fidelity
-        curve = self.curves[idx]
-
-        config = torch.tensor(config, dtype=torch.float, device=self.dev)
-        fidelity = torch.tensor(fidelity, dtype=torch.float, device=self.dev)
-        curve = torch.tensor(curve, dtype=torch.float, device=self.dev)
-        metafeat = None
+        self.metafeat = metafeat
         if self.metafeat is not None:
-            metafeat = torch.tensor(self.metafeat, dtype=torch.float, device=self.dev)
-            metafeat = metafeat.repeat(config.size(0), 1)
+            self.metafeat = pd.DataFrame([metafeat] * self.N)
+        self.pipelines = pd.concat([self.pipelines, self.metafeat], axis=1)
 
-        data = {
-            "config": config,
-            "fidelity": fidelity,
-            "curve": curve,
-            "metafeat": metafeat,
-        }
-        return data
+        self.ready = True
 
-    def _get_candidate_data(self):
-        config = torch.tensor(self.configs, dtype=torch.float, device=self.dev)
-        fidelity = torch.tensor(self.fidelities, dtype=torch.float, device=self.dev)
-        fidelity += 1
-        fidelity /= self.max_fidelity
-        curve = torch.tensor(self.curves, dtype=torch.float, device=self.dev)
-        metafeat = None
-        if self.metafeat is not None:
-            metafeat = torch.tensor(self.metafeat, dtype=torch.float, device=self.dev)
-            metafeat = metafeat.repeat(config.size(0), 1)
+    def setup_pandas(
+        self,
+        df: pd.DataFrame,
+        metafeat: Mapping[str, int | float] | None = None,
+    ):
+        """Setup the optimizer for optimization.
 
-        data = {
-            "config": config,
-            "fidelity": fidelity,
-            "curve": curve,
-            "metafeat": metafeat,
-        }
-        return data
+        Use an existing DataFrame to create the configurations to evaluate. Optionally,
+        metafeatures of the dataset can be provided.
 
-    def _predict(self):
-        test_data = self._get_candidate_data()
-
-        pred = self.perf_predictor.predict(test_data)  # type: ignore
-        pred_mean, pred_std = (
-            pred.mean.detach().cpu().numpy(),
-            pred.stddev.detach().cpu().numpy(),
+        Args:
+            df (pd.DataFrame): The DataFrame with the configurations to evaluate.
+            metafeat (Mapping[str, int | float], optional): The metafeatures of the dataset.
+        """
+        self.pipelines = df
+        self.N = len(df)
+        self.fidelities: np.ndarray = np.zeros(self.N, dtype=int)
+        self.curves: np.ndarray = np.full(
+            (self.N, self.max_fidelity), np.nan, dtype=float
         )
+        self.costs = np.ones(self.N, dtype=float)
+        if self.patience is not None:
+            self.score_history = np.zeros((self.N, self.patience), dtype=float)
 
-        cost = self.costs
-        if self.cost_predictor is not None:
-            pred_cost = self.cost_predictor.predict(**test_data)
-            mask = np.isnan(cost)
-            cost[mask] = pred_cost[mask]
-            
-        return pred_mean, pred_std, cost
+        self.metafeat = metafeat
+        if self.metafeat is not None:
+            self.metafeat = pd.DataFrame([metafeat] * self.N)
+        self.pipelines = pd.concat([self.pipelines, self.metafeat], axis=1)
+
+        self.ready = True
+
+    def _predict(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Predict the performance and cost of the configurations.
+        
+        Returns:
+            The mean and standard deviation of the performance of the pipelines and their costs.
+        """
+        pipeline, curve = self.pipelines, self.curves
+
+        pred = self.perf_predictor.predict(pipeline, curve)  # type: ignore
+        pred_mean, pred_std = pred
+
+        costs = self.costs
+        if self.cost_aware and self.costs is None:
+            costs = self.cost_predictor.predict(pipeline)  # type: ignore
+            costs = np.clip(costs, 1e-6, None)  # avoid division by zero
+            costs /= costs.max()  # normalize
+            costs = np.power(costs, self.cost_factor)  # rescale
+
+        return pred_mean, pred_std, costs
 
     def _calc_acq_val(self, mean, std, y_max):
+        """Calculate the acquisition value.
+
+        Args:
+            mean: np.ndarray
+                The mean of the predictions.
+            std: np.ndarray
+                The standard deviation of the predictions.
+            y_max: np.ndarray
+                The maximum score per fidelity.
+
+        Returns:
+            The acquisition values.
+        """
         fn = self.acq_fn
         xi = self.explore_factor
         match fn:
@@ -229,7 +242,7 @@ class QuickOptimizer(BaseOptimizer):
                 mask = std == 0
                 std = std + mask * 1.0
                 z = (mean - y_max - xi) / std
-                acq_value = (mean - y_max - xi) * norm.cdf(z) + std * norm.pdf(z)
+                acq_value = (mean - y_max) * norm.cdf(z) + std * norm.pdf(z)
                 acq_value[mask] = 0.0
             # Upper Confidence Bound
             case "ucb":
@@ -245,16 +258,30 @@ class QuickOptimizer(BaseOptimizer):
         return acq_value
 
     def _optimize_acq_fn(self, mean, std, cost) -> list[int]:
-        # max score per fidelity
-        y_max = self.curves.max(axis=0)
-        y_max[y_max == 0] = y_max.max()
+        """Optimize the acquisition function.
 
+        Args:
+            mean: np.ndarray
+                The mean of the predictions.
+            std: np.ndarray
+                The standard deviation of the predictions.
+            cost: np.ndarray
+                The cost of the pipeline.
+
+        Returns:
+            A sorted list of indices of the pipeline.
+        """
+        # maximum score per fidelity
+        curves = np.nan_to_num(self.curves)
+        y_max = curves.max(axis=0)
+        y_max = np.maximum.accumulate(y_max)
+
+        # get the ymax for the next fidelity of the pipelines
         next_fidelitys = np.minimum(self.fidelities + 1, self.max_fidelity)
-        y_max = y_max[next_fidelitys - 1]
+        y_max_next = y_max[next_fidelitys - 1]
 
-        acq_values = self._calc_acq_val(mean, std, y_max)
+        acq_values = self._calc_acq_val(mean, std, y_max_next)
         if self.cost_aware:
-            cost += 1  # avoid division by zero
             acq_values /= cost
 
         return np.argsort(acq_values).tolist()
@@ -263,11 +290,21 @@ class QuickOptimizer(BaseOptimizer):
         pred_mean, pred_std, cost = self._predict()
         ranks = self._optimize_acq_fn(pred_mean, pred_std, cost)
         ranks = [r for r in ranks if r not in self.stoped | self.failed]
-        return ranks[-1]
+        index = ranks[-1]
+        logger.debug(f"predicted score: {pred_mean[index]:.4f}")
+        return index
 
-    def ask(self) -> dict:
-        if not self._setup_run:
+    def ask(self) -> dict | None:
+        """Ask the optimizer for a configuration to evaluate.
+
+        Returns:
+            A dictionary with the configuration to evaluate.
+        """
+        if not self.ready:
             raise RuntimeError("Call setup() before ask()")
+
+        if self.finished:
+            return None
 
         self.ask_count += 1
         if len(self.evaled) < self.init_random_search_steps:
@@ -280,11 +317,17 @@ class QuickOptimizer(BaseOptimizer):
 
         return {
             "config_id": index,
-            "config": self.candidates[index],
+            "config": self.configs[index],
             "fidelity": fidelity,
         }
 
     def tell(self, result: dict | list):
+        """Tell the result of a trial to the optimizer.
+
+        Args:
+            result: dict | list[dict]
+                The result(s) for a trial.
+        """
         if isinstance(result, dict):
             result = [result]
         for res in result:
@@ -314,82 +357,42 @@ class QuickOptimizer(BaseOptimizer):
         self.evaled.add(index)
         self.eval_count += 1
 
-        if self.n_iter_no_change is not None:
-            if not np.any(self._score_history[index] < (score - self.tol)):
+        if self.patience is not None:
+            assert self.score_history is not None
+            if not np.any(self.score_history[index] < (score - self.tol)):
                 self.stoped.add(index)
-            self._score_history[index][fidelity % self.n_iter_no_change] = score
+            self.score_history[index][fidelity % self.patience] = score
+
+        self.finished = self._check_is_finished()
+
+    def _check_is_finished(self):
+        """Check if there is no more configurations to evaluate."""
+        left = set(range(self.N)) - self.evaled - self.failed - self.stoped
+        if not left:
+            return True
+        return False
 
     def ante(self):
-        if len(self.evaled) >= self.init_random_search_steps:
-            self.update()
+        """Some operations to perform by the tuner before the optimization loop
 
-    def post(self):
-        pass
+        Here: refit the predictors with observed data.
+        """
+        if (
+            self.refit
+            and not self.eval_count % self.refit_interval
+            and self.eval_count >= self.refit_init_steps
+        ):
+            self.fit_extra()
 
-    def update(self):
-        train_data = self._get_history_data()
-        self.perf_predictor.update(train_data)
+    def fit_extra(self):
+        """Refit the predictors with observed data."""
+        pipeline, curve = self.pipelines, self.curves
+        self.perf_predictor.fit_extra(pipeline, curve)  # type: ignore
 
-    def fit(self, data: MetaDataset, **kwargs):
-        # fit the predictors
-        self.perf_predictor.fit(data, **kwargs)
+    def fit(self, X, curve, cost):
+        """
+        Fit the predictors with the given training data.
+        """
+        self.perf_predictor.fit(X, curve)  # type: ignore
         if self.cost_predictor is not None:
-            self.cost_predictor.fit(data, **kwargs)
-
-        self.config_norm = data.get_config_norm()
-        self.metafeat_norm = data.get_metafeat_norm()
-
-    def save(self, path: str | Path = ""):
-        path = Path(path)
-        path.mkdir(parents=True, exist_ok=True)
-
-        ckp = dict(vars(self))
-
-        for key in IGNORE_SAVE_LOAD_VARS:
-            ckp.pop(key)
-
-        self.cs.to_json(path / "cs.json")
-        if self.meta is not None:
-            self.meta.to_json(path / "meta.json")
-
-        self.perf_predictor.save(path)
-        if self.cost_predictor is not None:
-            self.cost_predictor.save(path)
-
-        # torch.save(ckp, path / "checkpoint.pth")
-        with open(path / "quick.pkl", "wb") as f:
-            pickle.dump(ckp, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    @classmethod
-    def load(cls, path: str | Path):
-        path = Path(path)
-        assert path.exists(), f"Path {path} does not exist"
-
-        # load configspace(s)
-        cs = ConfigurationSpace.from_json(path / "cs.json")
-        cs_meta = None
-        if (path / "meta.json").exists():
-            cs_meta = ConfigurationSpace.from_json(path / "meta.json")
-
-        # create instance
-        opt = cls(cs, cs_meta)
-
-        # load checkpoint
-        with open(path / "quick.pkl", "rb") as f:
-            checkpoint: dict = pickle.load(f)
-        # update instance attributes
-        for key, value in vars(opt).items():
-            if key in IGNORE_SAVE_LOAD_VARS:
-                continue
-            if key in checkpoint:
-                setattr(opt, key, checkpoint.get(key, value))
-            else:
-                logger.info(f"'{key}' not in checkpoint")
-
-        # load predictors
-        opt.perf_predictor.load(path)
-        if opt.cost_predictor is not None:
-            assert (path / "cost_predictor").exists(), "cost_predictor not found"
-            opt.cost_predictor.load(path)
-
-        return opt
+            self.cost_predictor.fit(X, cost)
