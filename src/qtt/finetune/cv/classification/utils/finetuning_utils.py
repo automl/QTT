@@ -604,6 +604,7 @@ def prepare_model_for_finetuning(
             head_name = "model." + head_name
     return model, head_name
 
+
 def export_model_after_finetuning(model):
     if isinstance(model, TwoHeadsModel):
         model = model.model
