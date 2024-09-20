@@ -23,11 +23,11 @@ from .utils import MetricLogger, get_torch_device
 logger = logging.getLogger(__name__)
 
 DEFAULT_FIT_PARAMS = {
-    "learning_rate_init": 0.0001,
+    "learning_rate_init": 0.001,
     "batch_size": 1024,
     "max_iter": 100,
     "early_stop": True,
-    "patience": 5,
+    "patience": 10,
     "validation_fraction": 0.1,
     "tol": 1e-4,
 }
@@ -35,6 +35,9 @@ DEFAULT_FIT_PARAMS = {
 
 class CostPredictor(Predictor):
     temp_file_name = "temp_model.pt"
+    meta_data_mean: float | None = None
+    meta_data_std: float | None = None
+    meta_data_median: float | None = None
 
     def __init__(
         self,
@@ -126,7 +129,7 @@ class CostPredictor(Predictor):
                 "Number of columns in df array does not match feature_mapping."
             )
 
-        self.label_scaler = preprocessing.StandardScaler()  #MaxAbsScaler()
+        self.label_scaler = preprocessing.MaxAbsScaler()
         out_array = self.label_scaler.fit_transform(array)
 
         return out, out_array
@@ -292,6 +295,10 @@ class CostPredictor(Predictor):
 
         self._validate_fit_data(X, y)
         _X, _y = self._preprocess_fit_data(X, y)
+
+        self.meta_data_mean = np.mean(_y).item()
+        self.meta_data_std = np.std(_y).item()
+        self.meta_data_median = np.median(_y).item()
 
         train_dataset = SimpleTorchTabularDataset(_X, _y)
 
