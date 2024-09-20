@@ -3,7 +3,7 @@ from typing import Literal, Mapping
 
 import numpy as np
 import pandas as pd
-from ConfigSpace import Configuration, ConfigurationSpace
+from ConfigSpace import ConfigurationSpace
 from scipy.stats import norm
 
 from ..predictors import CostPredictor, PerfPredictor
@@ -118,7 +118,7 @@ class QuickOptimizer(Optimizer):
         self.tell_count = 0
         self.init_count = 0
         self.eval_count = 0
-        self.configs: list[Configuration] = []
+        self.configs: list[dict] = []
         self.evaled = set()
         self.stoped = set()
         self.failed = set()
@@ -158,9 +158,9 @@ class QuickOptimizer(Optimizer):
 
         if self.seed is not None:
             self.cs.seed(self.seed)
-        self.configs = self.cs.sample_configuration(n)
-        cfg_dict = [dict(c) for c in self.configs]
-        self.pipelines = pd.DataFrame(cfg_dict)
+        configs = self.cs.sample_configuration(n)
+        self.configs = [dict(c) for c in configs]
+        self.pipelines = pd.DataFrame(self.configs)
 
         self.metafeat = metafeat
         if self.metafeat is not None:
@@ -197,6 +197,7 @@ class QuickOptimizer(Optimizer):
         if self.metafeat is not None:
             self.metafeat = pd.DataFrame([metafeat] * self.N)
         self.pipelines = pd.concat([self.pipelines, self.metafeat], axis=1)
+        self.configs = self.pipelines.to_dict(orient="records")
 
         self.ready = True
 
@@ -214,7 +215,11 @@ class QuickOptimizer(Optimizer):
         costs = self.costs
         if self.cost_aware and self.costs is None:
             costs = self.cost_predictor.predict(pipeline)  # type: ignore
-            costs = np.clip(costs, 1e-6, None)  # avoid division by zero
+            min_clip = 1e-6
+            if self.cost_predictor.meta_data_mean is not None:  # type: ignore
+                min_clip = self.cost_predictor.meta_data_mean  # type: ignore
+            
+            costs = np.clip(costs, min_clip, None)  # avoid division by zero
             costs /= costs.max()  # normalize
             costs = np.power(costs, self.cost_factor)  # rescale
 
@@ -282,7 +287,8 @@ class QuickOptimizer(Optimizer):
 
         acq_values = self._calc_acq_val(mean, std, y_max_next)
         if self.cost_aware:
-            acq_values /= cost
+            # acq_values /= max(cost, meta.avg)  TODO: QuickFix
+            acq_values /= cost 
 
         return np.argsort(acq_values).tolist()
 
@@ -314,19 +320,18 @@ class QuickOptimizer(Optimizer):
         else:
             index = self._ask()
             fidelity = self.fidelities[index] + 1
-
         return {
             "config_id": index,
             "config": self.configs[index],
             "fidelity": fidelity,
         }
 
-    def tell(self, result: dict | list):
-        """Tell the result of a trial to the optimizer.
+    def tell(self, result: dict | list[dict]):
+        """Tell the optimizer the result of an evaluation.
 
         Args:
-            result: dict | list[dict]
-                The result(s) for a trial.
+            result (dict | list[dict]): A dictionary with the result of an evaluation.
+                If a list is provided, it is interpreted as a list of results.
         """
         if isinstance(result, dict):
             result = [result]

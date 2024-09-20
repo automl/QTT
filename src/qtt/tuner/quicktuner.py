@@ -60,7 +60,7 @@ class QuickTuner:
         optimizer: Optimizer,
         f: Callable,
         path: str | None = None,
-        save_freq: str = "step",
+        save_freq: str | None = "step",
         verbosity: int = 2,
         resume: bool = False,
         **kwargs,
