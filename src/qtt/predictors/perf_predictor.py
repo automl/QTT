@@ -36,7 +36,7 @@ DEFAULT_FIT_PARAMS = {
 
 DEFAULT_REFIT_PARAMS = {
     "learning_rate_init": 0.001,
-    "min_batch_size": 512,
+    "min_batch_size": 1024,
     "max_batch_size": 2048,
     "max_iter": 50,
     "early_stop": True,

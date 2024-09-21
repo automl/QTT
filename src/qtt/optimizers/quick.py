@@ -150,8 +150,10 @@ class QuickOptimizer(Optimizer):
             metafeat (Mapping[str, int | float], optional): The metafeatures of the dataset.
         """
         self.N = n
-        self.fidelities: np.ndarray = np.zeros(n, dtype=int)
-        self.curves: np.ndarray = np.full((n, self.max_fidelity), np.nan, dtype=float)
+        self.fidelities: np.ndarray = np.zeros(self.N, dtype=int)
+        self.curves: np.ndarray = np.full(
+            (self.N, self.max_fidelity), np.nan, dtype=float
+        )
         self.costs = np.ones(self.N, dtype=float)
         if self.patience is not None:
             self.score_history = np.zeros((n, self.patience), dtype=float)
@@ -213,7 +215,7 @@ class QuickOptimizer(Optimizer):
         pred_mean, pred_std = pred
 
         costs = self.costs
-        if self.cost_aware and self.costs is None:
+        if self.cost_aware:
             costs = self.cost_predictor.predict(pipeline)  # type: ignore
             min_clip = 1e-6
             if self.cost_predictor.meta_data_mean is not None:  # type: ignore
@@ -343,7 +345,7 @@ class QuickOptimizer(Optimizer):
 
         index = result["config_id"]
         fidelity = result["fidelity"]
-        cost = result["cost"]
+        # cost = result["cost"]
         score = result["score"]
         status = result["status"]
 
@@ -357,7 +359,7 @@ class QuickOptimizer(Optimizer):
         # update trackers
         self.curves[index, fidelity - 1] = score
         self.fidelities[index] = fidelity
-        self.costs[index] = cost
+        # self.costs[index] = cost
         self.history.append(result)
         self.evaled.add(index)
         self.eval_count += 1
