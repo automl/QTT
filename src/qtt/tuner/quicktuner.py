@@ -180,12 +180,23 @@ class QuickTuner:
             self.optimizer.save(opt_path)
         except Exception as e:
             logger.warning(f"Optimizer state not saved: {e!r}")
+    
+    def _save_traj(self, save: bool = True):
+        if not save:
+            return
+        try:
+            traj_path = os.path.join(self.output_path, "trajectory.csv")
+            traj_df = pd.DataFrame(self.traj)
+            traj_df.to_csv(traj_path)
+        except Exception as e:
+            logger.warning(f"Trajectory not saved: {e!r}")
 
-    def save(self, incumbent: bool = True, history: bool = True, state: bool = True):
+    def save(self, incumbent: bool = True, history: bool = True, state: bool = True, traj: bool = True):
         logger.info("Saving current state to disk...")
         self._save_incumbent(incumbent)
         self._save_history(history)
         self._save_state(state)
+        self._save_traj(traj)
 
     def load(self, path: str):
         logger.info(f"Loading state from {path}")
