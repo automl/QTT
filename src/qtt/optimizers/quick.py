@@ -218,11 +218,11 @@ class QuickOptimizer(Optimizer):
         if self.cost_aware:
             costs = self.cost_predictor.predict(pipeline)  # type: ignore
             min_clip = 1e-6
-            if self.cost_predictor.meta_data_mean is not None:  # type: ignore
-                min_clip = self.cost_predictor.meta_data_mean  # type: ignore
+            # if self.cost_predictor.meta_data_mean is not None:  # type: ignore
+            #     min_clip = self.cost_predictor.meta_data_mean  # type: ignore
             
-            costs = np.clip(costs, min_clip, None)  # avoid division by zero
             costs /= costs.max()  # normalize
+            costs = np.clip(costs, min_clip, None)  # avoid division by zero
             costs = np.power(costs, self.cost_factor)  # rescale
 
         return pred_mean, pred_std, costs
@@ -289,7 +289,6 @@ class QuickOptimizer(Optimizer):
 
         acq_values = self._calc_acq_val(mean, std, y_max_next)
         if self.cost_aware:
-            # acq_values /= max(cost, meta.avg)  TODO: QuickFix
             acq_values /= cost 
 
         return np.argsort(acq_values).tolist()
@@ -403,3 +402,19 @@ class QuickOptimizer(Optimizer):
         self.perf_predictor.fit(X, curve)  # type: ignore
         if self.cost_predictor is not None:
             self.cost_predictor.fit(X, cost)
+
+    def reset_path(self, path: str | None = None):
+        """
+        Reset the path of the model.
+
+        Parameters
+        ----------
+        path : str, default = None
+            Directory location to store all outputs.
+            If None, a new unique time-stamped directory is chosen.
+        """
+        super().reset_path(path)
+        if self.perf_predictor is not None:
+            self.perf_predictor.reset_path(path)
+        if self.cost_predictor is not None:
+            self.cost_predictor.reset_path(path)

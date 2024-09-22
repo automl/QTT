@@ -62,7 +62,7 @@ class Predictor:
             If None, a new unique time-stamped directory is chosen.
         """
         if path is None:
-            path = setup_outputdir(path=self.name.lower())
+            path = setup_outputdir(path=self.name.lower(), path_suffix=self.name)
         self.path = path
 
     @property

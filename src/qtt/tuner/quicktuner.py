@@ -80,6 +80,7 @@ class QuickTuner:
         self.save_freq = save_freq
 
         self.optimizer = optimizer
+        self.optimizer.reset_path(self.output_path)
         self.f = f
 
         # trackers

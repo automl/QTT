@@ -142,3 +142,17 @@ class Optimizer:
         if verbose:
             logger.info(f"Model saved to: {file_path}")
         return path
+    
+    def reset_path(self, path: str | None = None):
+        """
+        Reset the path of the model.
+
+        Parameters
+        ----------
+        path : str, default = None
+            Directory location to store all outputs.
+            If None, a new unique time-stamped directory is chosen.
+        """
+        if path is None:
+            path = setup_outputdir(path=self.name.lower(), path_suffix=self.name)
+        self.path = path

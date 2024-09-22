@@ -41,8 +41,8 @@ DEFAULT_REFIT_PARAMS = {
     "max_iter": 50,
     "early_stop": True,
     "patience": 5,
-    "validation_fraction": 0.1,
     "tol": 1e-4,
+    "restart": False,
 }
 
 
@@ -70,14 +70,18 @@ class PerfPredictor(Predictor):
 
         set_logger_verbosity(verbosity, logger)
 
-    @staticmethod
-    def _validate_fit_params(fit_params, default_params):
+    @classmethod
+    def _validate_fit_params(cls, fit_params: dict, default_params: dict) -> dict:
+        """Validate fit parameters and return a dictionary with default values filled in."""
         if not isinstance(fit_params, dict):
             raise ValueError("fit_params must be a dictionary")
-        for key in fit_params:
+
+        validated_params = {**default_params}
+        for key, value in fit_params.items():
             if key not in default_params:
                 raise ValueError(f"Unknown fit parameter: {key}")
-        return {**default_params, **fit_params}
+            validated_params[key] = value
+        return validated_params
 
     def _validate_fit_data(self, pipeline, curve):
         if not isinstance(pipeline, pd.DataFrame):
@@ -363,7 +367,7 @@ class PerfPredictor(Predictor):
         self.model = self._get_model()
         self._train_model(train_dataset, **self.fit_params)
 
-        self._fitted_model = copy.deepcopy(self.model)
+        self._fitted_model = copy.deepcopy(self.model.cpu().state_dict())
         self._fit_data = train_dataset
 
         return self
@@ -395,8 +399,8 @@ class PerfPredictor(Predictor):
         max_iter,
         early_stop,
         patience,
-        validation_fraction,
         tol,
+        restart
     ):
         logger.info("Refitting model...")
         if self.seed is not None:
@@ -411,6 +415,10 @@ class PerfPredictor(Predictor):
         num_workers = psutil.cpu_count(False)
         self.device = get_torch_device()
         dev = self.device
+
+        if restart:
+            self.model.load_state_dict(self._fitted_model)
+
         self.model.to(dev)
 
         self.model.eval()
