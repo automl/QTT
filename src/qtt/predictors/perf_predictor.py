@@ -26,12 +26,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FIT_PARAMS = {
     "learning_rate_init": 0.001,
-    "batch_size": 2048,
+    "batch_size": 4096,
     "max_iter": 100,
     "early_stop": True,
-    "patience": 5,
+    "patience": 10,
     "validation_fraction": 0.1,
-    "tol": 1e-4,
+    "tol": 1e-3,
 }
 
 DEFAULT_REFIT_PARAMS = {
@@ -41,7 +41,7 @@ DEFAULT_REFIT_PARAMS = {
     "max_iter": 50,
     "early_stop": True,
     "patience": 5,
-    "tol": 1e-4,
+    "tol": 1e-3,
     "restart": False,
 }
 
@@ -232,14 +232,14 @@ class PerfPredictor(Predictor):
             batch_size=min(batch_size, len(train_set)),
             shuffle=True,
             drop_last=True,
-            num_workers=psutil.cpu_count(False),
+            num_workers=8,
         )
         val_loader = None
         if val_set is not None:
             val_loader = DataLoader(
                 val_set,
                 batch_size=min(batch_size, len(val_set)),
-                num_workers=psutil.cpu_count(False),
+                num_workers=8,
             )
         
         cache_dir = os.path.expanduser("~/.cache")
@@ -335,7 +335,7 @@ class PerfPredictor(Predictor):
         #     dataset,
         #     batch_size=size,
         #     shuffle=True,
-        #     num_workers=psutil.cpu_count(False),
+        #     num_workers=8,
         # )
         # best_metric = 0
         # best_batch = None
@@ -412,7 +412,7 @@ class PerfPredictor(Predictor):
         os.makedirs(cache_dir, exist_ok=True)
         temp_save_file_path = os.path.join(cache_dir, self.temp_file_name)
 
-        num_workers = psutil.cpu_count(False)
+        num_workers = 8
         self.device = get_torch_device()
         dev = self.device
 
@@ -571,24 +571,24 @@ class PerfPredictor(Predictor):
 
         # after training the model, reset GPs training data
         self.model.eval()
-        # if len(tune_set) < self._max_train_data_size:
-        #     t_loader = DataLoader(tune_set, batch_size=len(tune_set), shuffle=True)
-        #     f_loader = DataLoader(
-        #         fitting_set,
-        #         batch_size=self._max_train_data_size - len(tune_set),
-        #         shuffle=True,
-        #     )
-        #     batch_one = next(iter(t_loader))
-        #     batch_two = next(iter(f_loader))
-        #     batch = [torch.cat([b1, b2]) for b1, b2 in zip(batch_one, batch_two)]
-        #     batch = (b.to(dev) for b in batch)
-        #     a, b, c = batch
-        # else:
-        loader = DataLoader(
-            tune_set, batch_size=self._max_train_data_size, shuffle=True
-        )
-        batch = next(iter(loader))
-        batch = (b.to(dev) for b in batch)
+        if len(tune_set) < self._max_train_data_size:
+            t_loader = DataLoader(tune_set, batch_size=len(tune_set), shuffle=True)
+            f_loader = DataLoader(
+                fitting_set,
+                batch_size=self._max_train_data_size - len(tune_set),
+                shuffle=True,
+            )
+            batch_one = next(iter(t_loader))
+            batch_two = next(iter(f_loader))
+            batch = [torch.cat([b1, b2]) for b1, b2 in zip(batch_one, batch_two)]
+            batch = (b.to(dev) for b in batch)
+            a, b, c = batch
+        else:
+            loader = DataLoader(
+                tune_set, batch_size=self._max_train_data_size, shuffle=True
+            )
+            batch = next(iter(loader))
+            batch = (b.to(dev) for b in batch)
         a, b, c = batch
         self.model.set_train_data(a, b, c)
 
