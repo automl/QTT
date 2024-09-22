@@ -2,11 +2,13 @@ import copy
 import logging
 import os
 import random
+import shutil
+import uuid
 
 import gpytorch
 import numpy as np
 import pandas as pd
-import psutil
+# import psutil
 import torch
 from torch.utils.data import DataLoader, random_split
 
@@ -243,7 +245,8 @@ class PerfPredictor(Predictor):
             )
         
         cache_dir = os.path.expanduser("~/.cache")
-        cache_dir = os.path.join(cache_dir, "qtt", self.name)
+        random_folder = str(uuid.uuid4())[:8]
+        cache_dir = os.path.join(cache_dir, "qtt", self.name, random_folder)
         os.makedirs(cache_dir, exist_ok=True)
         temp_save_file_path = os.path.join(cache_dir, self.temp_file_name)
         for it in range(1, max_iter + 1):
@@ -310,6 +313,10 @@ class PerfPredictor(Predictor):
         if early_stop:
             self.model.load_state_dict(torch.load(temp_save_file_path))
 
+        # remove cache dir
+        if os.path.exists(cache_dir):
+            shutil.rmtree(cache_dir)
+        
         # after training the gp, set its training data
         # to match the given parameter "_max_train_data_size"
         self.model.eval()
@@ -408,7 +415,8 @@ class PerfPredictor(Predictor):
             np.random.seed(self.seed)
             torch.manual_seed(self.seed)
         cache_dir = os.path.expanduser("~/.cache")
-        cache_dir = os.path.join(cache_dir, "qtt", self.name)
+        random_folder = str(uuid.uuid4())[:8]
+        cache_dir = os.path.join(cache_dir, "qtt", self.name, random_folder)
         os.makedirs(cache_dir, exist_ok=True)
         temp_save_file_path = os.path.join(cache_dir, self.temp_file_name)
 
@@ -568,6 +576,10 @@ class PerfPredictor(Predictor):
         if patience:
             logger.info(f"Loading best model from iteration {best_iter}")
             self.model.load_state_dict(torch.load(temp_save_file_path))
+        
+        # remove cache dir
+        if os.path.exists(cache_dir):
+            shutil.rmtree(cache_dir)
 
         # after training the model, reset GPs training data
         self.model.eval()

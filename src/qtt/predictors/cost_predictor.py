@@ -1,6 +1,8 @@
 import logging
 import os
 import random
+import shutil
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -221,7 +223,8 @@ class CostPredictor(Predictor):
             val_loader = DataLoader(val_set, batch_size=bs)
 
         cache_dir = os.path.expanduser("~/.cache")
-        cache_dir = os.path.join(cache_dir, "qtt", self.name)
+        random_folder = str(uuid.uuid4())[:8]
+        cache_dir = os.path.join(cache_dir, "qtt", self.name, random_folder)
         os.makedirs(cache_dir, exist_ok=True)
         temp_save_file_path = os.path.join(cache_dir, self.temp_file_name)
         for it in range(1, max_iter + 1):
@@ -284,6 +287,10 @@ class CostPredictor(Predictor):
 
         if early_stop:
             self.model.load_state_dict(torch.load(temp_save_file_path))
+
+        # remove cache dir
+        if os.path.exists(cache_dir):
+            shutil.rmtree(cache_dir)
 
     def _fit(
         self,
