@@ -594,7 +594,6 @@ class PerfPredictor(Predictor):
             batch_two = next(iter(f_loader))
             batch = [torch.cat([b1, b2]) for b1, b2 in zip(batch_one, batch_two)]
             batch = (b.to(dev) for b in batch)
-            a, b, c = batch
         else:
             loader = DataLoader(
                 tune_set, batch_size=self._max_train_data_size, shuffle=True
