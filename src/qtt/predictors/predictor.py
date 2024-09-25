@@ -39,9 +39,8 @@ class Predictor:
         else:
             self.name = name
 
-        self.path = path
-        if self.path is None:
-            self.path = setup_outputdir(path=self.name.lower())
+        if path is None:
+            self.path: str = setup_outputdir(path=self.name.lower())
             logger.info(
                 f"No path was specified for predictor, defaulting to: {self.path}",
             )
@@ -49,7 +48,6 @@ class Predictor:
             self.path = setup_outputdir(path)
 
         self.model = None
-        self.features = None
     
     def reset_path(self, path: str | None = None):
         """
@@ -57,9 +55,8 @@ class Predictor:
 
         Parameters
         ----------
-        path : str, default = None
-            Directory location to store all outputs.
-            If None, a new unique time-stamped directory is chosen.
+        path : str, optional, default=None
+            Directory location to store all outputs. If None, a new unique time-stamped directory is chosen.
         """
         if path is None:
             path = setup_outputdir(path=self.name.lower())

@@ -60,7 +60,7 @@ class QuickTuner:
         optimizer: Optimizer,
         f: Callable,
         path: str | None = None,
-        save_freq: str = "step",
+        save_freq: str | None  = "step",
         verbosity: int = 2,
         resume: bool = False,
         **kwargs,
@@ -80,6 +80,7 @@ class QuickTuner:
         self.save_freq = save_freq
 
         self.optimizer = optimizer
+        self.optimizer.reset_path(self.output_path)
         self.f = f
 
         # trackers

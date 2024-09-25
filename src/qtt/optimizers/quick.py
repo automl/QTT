@@ -3,7 +3,7 @@ from typing import Literal, Mapping
 
 import numpy as np
 import pandas as pd
-from ConfigSpace import Configuration, ConfigurationSpace
+from ConfigSpace import ConfigurationSpace
 from scipy.stats import norm
 
 from ..predictors import CostPredictor, PerfPredictor
@@ -118,7 +118,7 @@ class QuickOptimizer(Optimizer):
         self.tell_count = 0
         self.init_count = 0
         self.eval_count = 0
-        self.configs: list[Configuration] = []
+        self.configs: list[dict] = []
         self.evaled = set()
         self.stoped = set()
         self.failed = set()
@@ -128,7 +128,7 @@ class QuickOptimizer(Optimizer):
         self.pipelines: pd.DataFrame
         self.curves: np.ndarray
         self.fidelities: np.ndarray
-        self.costs: np.ndarray
+        self.costs: np.ndarray | None = None
         self.score_history: np.ndarray | None = None
 
         # flags
@@ -152,15 +152,15 @@ class QuickOptimizer(Optimizer):
         self.N = n
         self.fidelities: np.ndarray = np.zeros(n, dtype=int)
         self.curves: np.ndarray = np.full((n, self.max_fidelity), np.nan, dtype=float)
-        self.costs = np.ones(self.N, dtype=float)
+        self.costs = None
         if self.patience is not None:
             self.score_history = np.zeros((n, self.patience), dtype=float)
 
         if self.seed is not None:
             self.cs.seed(self.seed)
-        self.configs = self.cs.sample_configuration(n)
-        cfg_dict = [dict(c) for c in self.configs]
-        self.pipelines = pd.DataFrame(cfg_dict)
+        _configs = self.cs.sample_configuration(n)
+        self.configs = [dict(c) for c in _configs]
+        self.pipelines = pd.DataFrame(self.configs)
 
         self.metafeat = metafeat
         if self.metafeat is not None:
@@ -189,7 +189,7 @@ class QuickOptimizer(Optimizer):
         self.curves: np.ndarray = np.full(
             (self.N, self.max_fidelity), np.nan, dtype=float
         )
-        self.costs = np.ones(self.N, dtype=float)
+        self.costs = None
         if self.patience is not None:
             self.score_history = np.zeros((self.N, self.patience), dtype=float)
 
@@ -197,10 +197,11 @@ class QuickOptimizer(Optimizer):
         if self.metafeat is not None:
             self.metafeat = pd.DataFrame([metafeat] * self.N)
         self.pipelines = pd.concat([self.pipelines, self.metafeat], axis=1)
+        self.configs = self.pipelines.to_dict(orient="records")
 
         self.ready = True
 
-    def _predict(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _predict(self) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         """Predict the performance and cost of the configurations.
         
         Returns:
@@ -217,6 +218,7 @@ class QuickOptimizer(Optimizer):
             costs = np.clip(costs, 1e-6, None)  # avoid division by zero
             costs /= costs.max()  # normalize
             costs = np.power(costs, self.cost_factor)  # rescale
+            self.costs = costs
 
         return pred_mean, pred_std, costs
 
@@ -338,7 +340,7 @@ class QuickOptimizer(Optimizer):
 
         index = result["config_id"]
         fidelity = result["fidelity"]
-        cost = result["cost"]
+        # cost = result["cost"]
         score = result["score"]
         status = result["status"]
 
@@ -352,7 +354,7 @@ class QuickOptimizer(Optimizer):
         # update trackers
         self.curves[index, fidelity - 1] = score
         self.fidelities[index] = fidelity
-        self.costs[index] = cost
+        # self.costs[index] = cost
         self.history.append(result)
         self.evaled.add(index)
         self.eval_count += 1
@@ -396,3 +398,18 @@ class QuickOptimizer(Optimizer):
         self.perf_predictor.fit(X, curve)  # type: ignore
         if self.cost_predictor is not None:
             self.cost_predictor.fit(X, cost)
+
+    def reset_path(self, path: str | None = None):
+        """
+        Reset the path of the model.
+        Parameters
+        ----------
+        path : str, default = None
+            Directory location to store all outputs.
+            If None, a new unique time-stamped directory is chosen.
+        """
+        super().reset_path(path)
+        if self.perf_predictor is not None:
+            self.perf_predictor.reset_path(path)
+        if self.cost_predictor is not None:
+            self.cost_predictor.reset_path(path)
