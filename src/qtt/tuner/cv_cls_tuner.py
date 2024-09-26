@@ -4,6 +4,8 @@ from ..optimizers.quick import QuickOptimizer
 from ..pretrained import load_pretrained_optimizer
 from .quicktuner import QuickTuner
 
+import numpy as np
+
 
 class QuickCVCLSTuner(QuickTuner):
     """QuickTuner for image classification tasks.
@@ -30,18 +32,19 @@ class QuickCVCLSTuner(QuickTuner):
 
         super().__init__(quick_opt, finetune_script, path=path, verbosity=verbosity)
 
-    def run(self, fevals: int | None = None, time_budget: float | None = None):
-        """Run the tuner.
+    def run(self, fevals: int | None = None, time_budget: float | None = None) -> tuple[
+        np.ndarray, np.ndarray, np.ndarray
+    ]:
+        """
 
         Args:
-            task_info (dict, optional): Additional information to pass to the objective function. Defaults to None.
             fevals (int, optional): Number of function evaluations to run. Defaults to None.
             time_budget (float, optional): Time budget in seconds. Defaults to None.
 
         Returns:
-            np.ndarray: Trajectory of the incumbent scores.
-            np.ndarray: Runtime of the incumbent evaluations.
-            np.ndarray: History of all evaluations.
+            - np.ndarray: Trajectory of the incumbent scores.
+            - np.ndarray: Runtime of the incumbent evaluations.
+            - np.ndarray: History of all evaluations.
         """
         return super().run(
             task_info=self.task_info, fevals=fevals, time_budget=time_budget
