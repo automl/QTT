@@ -380,15 +380,16 @@ class PerfPredictor(Predictor):
 
     def _fit(
         self,
-        pipeline: pd.DataFrame,
-        curve: np.ndarray,
+        X: pd.DataFrame,
+        y: np.ndarray,
+        **kwargs,
     ):
         if self.is_fit:
             raise AssertionError("Predictor is already fit! Create a new one.")
 
-        self._validate_fit_data(pipeline, curve)
-        x = self._preprocess_fit_data(pipeline)
-        train_dataset = CurveRegressionDataset(x, curve)
+        self._validate_fit_data(X, y)
+        x = self._preprocess_fit_data(X)
+        train_dataset = CurveRegressionDataset(x, y)
 
         self.model = self._get_model()
         self._train_model(train_dataset, **self.fit_params)
@@ -645,7 +646,7 @@ class PerfPredictor(Predictor):
         return path
 
     @classmethod
-    def load(cls, path: str, reset_paths=True, verbose=True):
+    def load(cls, path: str, reset_paths=True, verbose=True) -> "PerfPredictor":
         """
         Loads the model from disk to memory.
 

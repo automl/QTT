@@ -64,7 +64,7 @@ class Predictor:
         """Returns True if the model has been fit."""
         return self.model is not None
 
-    def fit(self, *args, **kwargs):
+    def fit(self, X: pd.DataFrame, y: ArrayLike, verbosity: int = 2, **kwargs):
         """
         Fit model to predict values in y based on X.
 
@@ -86,16 +86,13 @@ class Predictor:
             **kwargs :
                 Any additional fit arguments a model supports.
         """
-        out = self._fit(*args, **kwargs)
+        out = self._fit(X=X, y=y, verbosity=verbosity, **kwargs)
         if out is None:
             out = self
         return out
 
     def _fit(
         self,
-        X: pd.DataFrame,
-        y: ArrayLike,
-        verbosity: int = 2,
         **kwargs,
     ):
         """
