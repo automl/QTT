@@ -1,0 +1,26 @@
+name: docs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+      - name: "Install dependancies"
+        run: python -m pip install -e ".[dev]"
+      - name: "Build Docs"
+        run: mkdocs build --clean --strict

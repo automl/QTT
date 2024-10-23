@@ -30,6 +30,24 @@ classifiers = [
 ]
 license = { file = "LICENSE" }
 
+[project.optional-dependencies]
+docs = [
+  "mkdocs",
+  "mkdocs-material",
+  "mkdocs-autorefs",
+  "mkdocs-gen-files",
+  "mkdocs-literate-nav",
+  "mkdocs-glightbox",
+  "mkdocstrings[python]",
+  "markdown-exec[ansi]",
+  "matplotlib",
+  "rich",
+  "mike",
+  "pillow",
+  "cairosvg",
+  "black",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
