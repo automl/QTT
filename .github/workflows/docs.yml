@@ -22,6 +22,6 @@ jobs:
           key: ${{ github.ref }}
           path: .cache
       - name: "Install dependencies"
-        run: python -m pip install mkdocs-material mkdocs-autorefs mkdocs-glightbox mkdocs-literate-nav mkdocstrings[python] mkdocs-gen-files mkdocs-awesome-pages-plugin typing-extensions more-iterools pillow cairosvg
+        run: python -m pip install mkdocs-material mkdocs-autorefs mkdocs-glightbox mkdocs-literate-nav mkdocstrings[python] mkdocs-gen-files mkdocs-awesome-pages-plugin typing-extensions more-itertools pillow cairosvg
       - name: "Build Docs"
         run: mkdocs gh-deploy --force
