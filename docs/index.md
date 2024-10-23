@@ -1,21 +1,3 @@
-# QTT documentation
+Welcome to the Quick-Tune-Tool docs.
 
-## Intro
-
-
-
-For full documentation visit [mkdocs.org](https://www.mkdocs.org).
-
-## Commands
-
-* `mkdocs new [dir-name]` - Create a new project.
-* `mkdocs serve` - Start the live-reloading docs server.
-* `mkdocs build` - Build the documentation site.
-* `mkdocs -h` - Print help message and exit.
-
-## Project layout
-
-    mkdocs.yml    # The configuration file.
-    docs/
-        index.md  # The documentation homepage.
-        ...       # Other markdown pages, images and other files.
+For a quick-start, check out [examples](./examples/index.md) for copy-pastable snippets to start from. 

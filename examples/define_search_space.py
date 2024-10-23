@@ -1,3 +1,14 @@
+"""Define Search Space
+
+This examples shows how to define a search space. We use
+[ConfigSpace](https://github.com/automl/ConfigSpace).
+
+This search space is defined for a computer vision classification task and includes
+various hyperparameters that can be optimized.
+
+First import the necessary modules:
+"""
+
 from ConfigSpace import (
     Categorical,
     ConfigurationSpace,
@@ -8,7 +19,43 @@ from ConfigSpace import (
 
 cs = ConfigurationSpace("cv-classification")
 
-# finetuning parameters
+"""
+## Finetuning Parameters
+The finetuning parameters in this configuration space are designed to control how a
+pre-trained model is fine-tuned on a new dataset. Here's a breakdown of each finetuning
+parameter:
+
+1. **`pct_to_freeze`** (Percentage of Model to Freeze):
+This parameter controls the fraction of the model's layers that will be frozen during
+training. Freezing a layer means that its weights will not be updated. Where `0.0`
+means no layers are frozen, and `1.0` means all layers are frozen, except for the
+final classification layer.
+
+2. **`layer_decay`** (Layer-wise Learning Rate Decay):
+Layer-wise decay is a technique where deeper layers of the model use lower learning
+rates than layers closer to the output.
+
+3. **`linear_probing`**:
+When linear probing is enabled, it means the training is focused on updating only the
+final classification layer (linear layer), while keeping the rest of the model frozen.
+
+4. **`stoch_norm`** ([Stochastic Normalization](https://proceedings.neurips.cc//paper_files/paper/2020/hash/bc573864331a9e42e4511de6f678aa83-Abstract.html)):
+Enabling stochastic normalization during training.
+
+5. **`sp_reg`** ([Starting Point Regularization](https://arxiv.org/abs/1802.01483)):
+This parameter controls the amount of regularization applied to the weights of the model
+towards the pretrained model.
+
+6. **`delta_reg`** ([DELTA Regularization](https://arxiv.org/abs/1901.09229)):
+DELTA regularization aims to preserve the outer layer outputs of the target network.
+
+7. **`bss_reg`** ([Batch Spectral Shrinkage Regularization](https://proceedings.neurips.cc/paper_files/paper/2019/hash/c6bff625bdb0393992c9d4db0c6bbe45-Abstract.html)):
+Batch Spectral Shrinkage (BSS) regularization penalizes the spectral norm of the model's weight matrices.
+   
+8. **`cotuning_reg`** ([Co-tuning Regularization](https://proceedings.neurips.cc/paper/2020/hash/c8067ad1937f728f51288b3eb986afaa-Abstract.html)):
+This parameter controls the strength of co-tuning, a method that aligns the
+representation of new data with the pre-trained model's representations
+"""
 freeze = OrdinalHyperparameter("pct_to_freeze", [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
 ld = OrdinalHyperparameter("layer_decay", [0.0, 0.65, 0.75])
 lp = OrdinalHyperparameter("linear_probing", [False, True])
@@ -18,7 +65,22 @@ d_reg = OrdinalHyperparameter("delta_reg", [0.0, 0.0001, 0.001, 0.01, 0.1])
 bss = OrdinalHyperparameter("bss_reg", [0.0, 0.0001, 0.001, 0.01, 0.1])
 cot = OrdinalHyperparameter("cotuning_reg", [0.0, 0.5, 1.0, 2.0, 4.0])
 
-# regularization parameters
+"""
+## Regularization Parameters
+
+- **`mixup`**: A data augmentation technique that mixes two training samples and their labels. The value determines the strength of mixing between samples.
+  
+- **`mixup_prob`**: Specifies the probability of applying mixup augmentation to a given batch. A value of 0 means mixup is never applied, while 1 means it is applied to every batch.
+
+- **`cutmix`**: Another data augmentation method that combines portions of two images and their labels.
+
+- **`drop`** (Dropout): Dropout is a regularization technique where random neurons in a layer are "dropped out" (set to zero) during training.
+
+- **`smoothing`** (Label Smoothing): A technique that smooths the true labels, assigning a small probability to incorrect classes.
+
+- **`clip_grad`**: This controls the gradient clipping, which constrains the magnitude of gradients during backpropagation.
+
+"""
 mix = OrdinalHyperparameter("mixup", [0.0, 0.2, 0.4, 1.0, 2.0, 4.0, 8.0])
 mix_p = OrdinalHyperparameter("mixup_prob", [0.0, 0.25, 0.5, 0.75, 1.0])
 cut = OrdinalHyperparameter("cutmix", [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0])
@@ -26,7 +88,9 @@ drop = OrdinalHyperparameter("drop", [0.0, 0.1, 0.2, 0.3, 0.4])
 smooth = OrdinalHyperparameter("smoothing", [0.0, 0.05, 0.1])
 clip = OrdinalHyperparameter("clip_grad", [0, 1, 10])
 
-# optimization parameters
+"""
+## Optimization Parameters
+"""
 amp = OrdinalHyperparameter("amp", [False, True])
 opt = Categorical("opt", ["sgd", "momentum", "adam", "adamw", "adamp"])
 betas = Categorical(
@@ -109,7 +173,27 @@ cs.add(
     cond_8,
 )
 
-# model
+"""
+## Model Choices
+
+The **model choices** represent a range of state-of-the-art deep learning architectures
+for image classification tasks. Each model has different characteristics in terms of
+architecture, size, and computational efficiency, providing flexibility to users
+depending on their specific needs and resources. Here's an overview:
+
+- **Transformer-based models**: These models, such as BEiT and DeiT, use the transformer
+architecture that has become popular in computer vision tasks. They are highly scalable
+and effective for large datasets and benefit from pre-training on extensive image
+corpora.
+  
+- **ConvNet-based models**: Models like ConvNeXt and EfficientNet are based on
+convolutional neural networks (CNNs), which have long been the standard for image
+classification.
+
+- **Lightweight models**: Options such as MobileViT and EdgeNeXt are designed for
+resource-constrained environments like mobile devices or edge computing. These models
+prioritize smaller size and lower computational costs.
+"""
 model = Categorical(
     "model",
     [

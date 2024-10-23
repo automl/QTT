@@ -2,6 +2,17 @@
 
 QuickTuneTool tackles the challenge of selecting the best pretrained model and fine-tuning hyperparameters for new datasets. It simplifies this process using a Combined Algorithm Selection and Hyperparameter Optimization (CASH) technique within a Bayesian optimization framework.
 
+
+### Table of Contents
+- [Key Features](#key-features)
+- [Getting Started](#getting-started)
+  - [Installation](#installation)
+    - [Install from Source](#install-from-source)
+- [Basic Usage](#basic-usage)
+- [Advanced Usage](#advanced-usage)
+- [References](#references)
+- [Citations](#citations)
+
 The approach relies on three key components:
 1. **Gray-Box HPO**: Instead of fully training all models, QuickTuneTool leverages partial learning curves by running models for only a few initial epochs and then focusing on the most promising ones.
 2. **Meta-Learning**: The tool draws insights from prior evaluations on related tasks to accelerate and improve the search for optimal models and hyperparameters.
