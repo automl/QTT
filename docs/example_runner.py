@@ -16,7 +16,7 @@ from more_itertools import first_true, peekable
 
 logger = logging.getLogger("mkdocs")
 
-RUN_EXAMPLES_ENV_VAR = "AMLTK_DOC_RENDER_EXAMPLES"
+RUN_EXAMPLES_ENV_VAR = "DOC_RENDER_EXAMPLES"
 
 
 @dataclass
