@@ -45,12 +45,12 @@ plugins:
   - glightbox
   - offline:
       enabled: !ENV [AMLTK_DOCS_OFFLINE, false]
-  # - markdown-exec
-  # - mike:
-  #     version_selector: true
-  #     css_dir: css
-  #     javascript_dir: js
-  #     canonical_version: latest
+  - markdown-exec
+  - mike:
+      version_selector: true
+      css_dir: css
+      javascript_dir: js
+      canonical_version: latest
   - literate-nav:
         nav_file: SUMMARY.md
   - mkdocstrings:
