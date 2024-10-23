@@ -16,7 +16,7 @@ dependencies = [
 requires-python = ">=3.10"
 authors = [{ name = "Ivo Rapant", email = "rapanti@cs.uni-freiburg.de" }]
 readme = "README.md"
-description = "Quick-Tune: Quickly Learning Which Pretrained Model to Finetune and How"
+description = "A Framework for Efficient Model Selection and Hyperparameter Optimization"
 classifiers = [
   'Intended Audience :: Science/Research',
   'Intended Audience :: Developers',
@@ -29,6 +29,24 @@ classifiers = [
   'Programming Language :: Python :: 3',
 ]
 license = { file = "LICENSE" }
+
+[project.optional-dependencies]
+docs = [
+  "mkdocs",
+  "mkdocs-material",
+  "mkdocs-autorefs",
+  "mkdocs-gen-files",
+  "mkdocs-literate-nav",
+  "mkdocs-glightbox",
+  "mkdocstrings[python]",
+  "markdown-exec[ansi]",
+  "matplotlib",
+  "rich",
+  "mike",
+  "pillow",
+  "cairosvg",
+  "black",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

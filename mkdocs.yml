@@ -1,0 +1,120 @@
+site_name: Quick-Tune-Tool
+repo_url: https://github.com/automl/QTT
+repo_name: automl/QTT
+
+theme:
+  name: material
+
+watch:
+  - src/qtt
+  - examples/
+
+markdown_extensions:
+  - admonition
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: "#"
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.magiclink:
+      hide_protocol: true
+      repo_url_shortener: true
+      repo_url_shorthand: true
+      user: automl
+      repo: qtt
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+      - name: mermaid
+        class: mermaid
+        format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+  - autorefs
+  - glightbox
+  - offline:
+      enabled: !ENV [AMLTK_DOCS_OFFLINE, false]
+  # - markdown-exec
+  # - mike:
+  #     version_selector: true
+  #     css_dir: css
+  #     javascript_dir: js
+  #     canonical_version: latest
+  - literate-nav:
+        nav_file: SUMMARY.md
+  - mkdocstrings:
+      default_handler: python
+      enable_inventory: true
+      handlers:
+        python:
+          paths: [src]
+          # Extra objects which allow for linking to external docs
+          import:
+            - 'https://docs.python.org/3/objects.inv'
+            - 'https://numpy.org/doc/stable/objects.inv'
+            - 'https://pandas.pydata.org/docs/objects.inv'
+            - 'https://optuna.readthedocs.io/en/stable/objects.inv'
+            - 'https://scikit-learn.org/stable/objects.inv'
+            - 'https://pytorch.org/docs/stable/objects.inv'
+          options:  # https://mkdocstrings.github.io/python/usage/
+            docstring_section_style: list
+            docstring_options:
+              ignore_init_summary: true
+              trim_doctest_flags: true
+              returns_multiple_items: false
+            show_docstring_attributes: true
+            show_docstring_description: true
+            # show_root_heading: true
+            show_root_toc_entry: true
+            show_object_full_path: false
+            show_root_members_full_path: false
+            signature_crossrefs: true
+            # merge_init_into_class: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            docstring_style: google
+            inherited_members: true
+            show_if_no_docstring: false
+            show_bases: true
+            # members_order: "alphabetical"
+            # group_by_category: true
+            # show_signature: true
+            # separate_signature: true
+            # show_signature_annotations: true
+            # filters:
+            #   - "!^_[^_]"
+  - gen-files:
+      scripts:
+        - docs/example_runner.py
+
+nav:
+  - Home: index.md
+  - Reference:
+    - reference/index.md
+    - Optimizers:
+      - reference/optimizers/index.md
+      - reference/optimizers/optimizer.md
+      - reference/optimizers/quick.md
+      - reference/optimizers/random.md
+    - Predictors:
+      - reference/predictors/index.md
+      - reference/predictors/predictor.md
+      - PerfPredictor: reference/predictors/perf.md
+      - CostPredictor: reference/predictors/cost.md
+    - Tuner:
+      - reference/tuner/index.md
+      - reference/tuner/cv_cls_tuner.md
+      - reference/tuner/quicktuner.md
+  # Auto generated with docs/examples_runner.py
+  - Examples: "examples/"

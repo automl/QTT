@@ -20,36 +20,22 @@ logger = logging.getLogger(__name__)
 
 
 class QuickTuner:
-    """QuickTuner is a wrapper around an optimizer that runs the optimization loop.
-
-    Parameters
-    ----------
-    optimizer : Optimizer
-        An instance of an Optimizer class.
-    f : Callable
-        A function that takes a configuration and returns a score.
-    path : str, default = None 
-        Directory location to store all outputs.
-        If None, a new unique time-stamped directory is chosen.
-    save_freq : str, default = "step"
-        Frequency of saving the state of the tuner.
-        - "step": save after each evaluation.
-        - "incumbent": save only when the incumbent changes.
-        - None: do not save.
-    verbosity : int, default = 2
-        Verbosity level of the logger.
-    resume : bool, default = False
-        Whether to resume the tuner from a previous state.
-    log_to_file : bool, default = True
-        Whether to log to a file.
-    log_file_name : str, default = "quicktuner.log"
-        Name of the log file.
-    log_file_path : str, default = "auto"
-        Path to the log file.
-    path_suffix : str, default = "tuner"
-        Suffix to append to the output directory.
-        By default, the output directory is named ``qtt/`timestamp`/tuner``.
     """
+    QuickTuner is a wrapper around an optimizer that runs the optimization loop.
+
+    Args:
+        optimizer (Optimizer): An instance of an Optimizer class.
+        f (Callable): A function that takes a configuration and returns a score.
+        path (str, optional): Directory location to store all outputs. Defaults to None.
+            If None, a new unique time-stamped directory is chosen.
+        save_freq (str, optional): Frequency of saving the state of the tuner. Defaults to "step".
+            - "step": save after each evaluation.
+            - "incumbent": save only when the incumbent changes.
+            - None: do not save.
+        verbosity (int, optional): Verbosity level of the logger. Defaults to 2.
+        resume (bool, optional): Whether to resume the tuner from a previous state. Defaults to False.
+    """
+
     log_to_file: bool = True
     log_file_name: str = "quicktuner.log"
     log_file_path: str = "auto"
@@ -60,7 +46,7 @@ class QuickTuner:
         optimizer: Optimizer,
         f: Callable,
         path: str | None = None,
-        save_freq: str = "step",
+        save_freq: str | None  = "step",
         verbosity: int = 2,
         resume: bool = False,
         **kwargs,
@@ -80,6 +66,7 @@ class QuickTuner:
         self.save_freq = save_freq
 
         self.optimizer = optimizer
+        self.optimizer.reset_path(self.output_path)
         self.f = f
 
         # trackers
@@ -198,7 +185,7 @@ class QuickTuner:
         task_info: dict | None = None,
         fevals: int | None = None,
         time_budget: float | None = None,
-    ):
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Run the tuner.
 
         Args:
@@ -207,9 +194,10 @@ class QuickTuner:
             time_budget (float, optional): Time budget in seconds. Defaults to None.
 
         Returns:
-            np.ndarray: Trajectory of the incumbent scores.
-            np.ndarray: Runtime of the incumbent evaluations.
-            np.ndarray: History of all evaluations.
+            Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                - trajectory (np.ndarray): Trajectory of the incumbent scores.
+                - runtime (np.ndarray): Runtime of the incumbent evaluations.
+                - history (np.ndarray): History of all evaluations.
         """
         logger.info("Starting QuickTuner Run...")
         logger.info(f"QuickTuneTool will save results to {self.output_path}")

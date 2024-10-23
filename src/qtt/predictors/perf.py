@@ -2,24 +2,24 @@ import copy
 import logging
 import os
 import random
+import shutil
 
 import gpytorch
 import numpy as np
 import pandas as pd
-import psutil
 import torch
 from torch.utils.data import DataLoader, random_split
 
 from qtt.predictors.models import FeatureEncoder
 from qtt.utils.log_utils import set_logger_verbosity
 
-from .predictor import Predictor
 from .data import (
     CurveRegressionDataset,
     create_preprocessor,
     get_feature_mapping,
     get_types_of_features,
 )
+from .predictor import Predictor
 from .utils import MetricLogger, get_torch_device
 
 logger = logging.getLogger(__name__)
@@ -36,19 +36,17 @@ DEFAULT_FIT_PARAMS = {
 
 DEFAULT_REFIT_PARAMS = {
     "learning_rate_init": 0.001,
-    "min_batch_size": 512,
-    "max_batch_size": 2048,
+    "batch_size": 2048,
     "max_iter": 50,
     "early_stop": True,
     "patience": 5,
-    "validation_fraction": 0.1,
     "tol": 1e-4,
 }
 
 
 class PerfPredictor(Predictor):
     temp_file_name: str = "temp_model.pt"
-    _max_train_data_size: int = 4096
+    train_data_size: int = 4096
     _fit_data = None
 
     def __init__(
@@ -60,7 +58,6 @@ class PerfPredictor(Predictor):
         verbosity: int = 2,
     ) -> None:
         super().__init__(path=path)
-
         self.fit_params = self._validate_fit_params(fit_params, DEFAULT_FIT_PARAMS)
         self.refit_params = self._validate_fit_params(
             refit_params, DEFAULT_REFIT_PARAMS
@@ -72,6 +69,19 @@ class PerfPredictor(Predictor):
 
     @staticmethod
     def _validate_fit_params(fit_params, default_params):
+        """
+        Validate hyperparameters for fitting the model.
+
+        Args:
+            fit_params (dict): Hyperparameters for fitting the model.
+            default_params (dict): Default hyperparameters for fitting the model.
+
+        Raises:
+            ValueError: If fit_params is not a dictionary or contains unknown hyperparameters.
+
+        Returns:
+            dict: Validated hyperparameters.
+        """
         if not isinstance(fit_params, dict):
             raise ValueError("fit_params must be a dictionary")
         for key in fit_params:
@@ -79,7 +89,22 @@ class PerfPredictor(Predictor):
                 raise ValueError(f"Unknown fit parameter: {key}")
         return {**default_params, **fit_params}
 
-    def _validate_fit_data(self, pipeline, curve):
+    def _validate_fit_data(self, pipeline: pd.DataFrame, curve: np.ndarray):
+        """
+        Validate data for fitting the model.
+
+        Args:
+            pipeline (pandas.DataFrame): Pipeline data.
+            curve (numpy.ndarray): Curve data.
+
+        Raises:
+            ValueError: If pipeline or curve is not a pandas.DataFrame or numpy.ndarray, or if
+                pipeline and curve have different number of samples, or if column names are not
+                unique.
+
+        Returns:
+            tuple: Validated pipeline and curve data.
+        """
         if not isinstance(pipeline, pd.DataFrame):
             raise ValueError("pipeline must be a pandas.DataFrame instance")
 
@@ -98,7 +123,13 @@ class PerfPredictor(Predictor):
 
     def _preprocess_fit_data(self, df: pd.DataFrame) -> np.ndarray:
         """
-        Process data for fitting the model.
+        Preprocess data for fitting the model.
+
+        Args:
+            df (pandas.DataFrame): Data to preprocess.
+
+        Returns:
+            numpy.ndarray: Preprocessed data.
         """
         self.original_features = list(df.columns)
 
@@ -120,6 +151,20 @@ class PerfPredictor(Predictor):
         return np.array(out)
 
     def _validate_predict_data(self, pipeline, curve):
+        """Validate data for prediction. Applies the same steps as _validate_fit_data
+
+        Args:
+            pipeline (pandas.DataFrame): Pipeline data.
+            curve (numpy.ndarray): Curve data.
+
+        Raises:
+            ValueError: If pipeline or curve is not a pandas.DataFrame or numpy.ndarray, or if
+                pipeline and curve have different number of samples, or if column names are not
+                unique.
+
+        Returns:
+            tuple: Validated pipeline and curve data.
+        """
         if not isinstance(pipeline, pd.DataFrame) or not isinstance(curve, np.ndarray):
             raise ValueError("pipeline and curve must be pandas.DataFrame instances")
 
@@ -178,14 +223,27 @@ class PerfPredictor(Predictor):
     def _train_model(
         self,
         dataset,
-        learning_rate_init,
-        batch_size,
-        max_iter,
-        early_stop,
-        patience,
-        validation_fraction,
-        tol,
+        learning_rate_init: float,
+        batch_size: int,
+        max_iter: int,
+        early_stop: bool,
+        patience: int | None,
+        validation_fraction: float,
+        tol: float,
     ):
+        """
+        Train the model on the given dataset.
+
+        Args:
+            dataset: dataset to train on
+            learning_rate_init: initial learning rate
+            batch_size: batch size to use
+            max_iter: maximum number of iterations to train for
+            early_stop: if True, stop training when validation loss stops improving
+            patience: number of iterations to wait before stopping training
+            validation_fraction: fraction of dataset to use for validation
+            tol: tolerance for determining when to stop training
+        """
         if self.seed is not None:
             random.seed(self.seed)
             np.random.seed(self.seed)
@@ -203,7 +261,7 @@ class PerfPredictor(Predictor):
 
         if patience is not None:
             if early_stop:
-                if validation_fraction < 0 or validation_fraction > 1:
+                if validation_fraction <= 0 or validation_fraction >= 1:
                     raise AssertionError(
                         "validation_fraction must be between 0 and 1 when early_stop is True"
                     )
@@ -228,18 +286,17 @@ class PerfPredictor(Predictor):
             batch_size=min(batch_size, len(train_set)),
             shuffle=True,
             drop_last=True,
-            num_workers=psutil.cpu_count(False),
+            num_workers=4,
         )
         val_loader = None
         if val_set is not None:
             val_loader = DataLoader(
                 val_set,
                 batch_size=min(batch_size, len(val_set)),
-                num_workers=psutil.cpu_count(False),
+                num_workers=4,
             )
-        
-        cache_dir = os.path.expanduser("~/.cache")
-        cache_dir = os.path.join(cache_dir, "qtt", self.name)
+
+        cache_dir = os.path.join(self.path, ".tmp")
         os.makedirs(cache_dir, exist_ok=True)
         temp_save_file_path = os.path.join(cache_dir, self.temp_file_name)
         for it in range(1, max_iter + 1):
@@ -266,7 +323,7 @@ class PerfPredictor(Predictor):
                 metric_logger.update(loss=loss.item())
                 metric_logger.update(lengthscale=self.model.lengthscale)
                 metric_logger.update(noise=self.model.noise)  # type: ignore
-            logger.info(f"Averaged stats: {str(metric_logger)}")
+            logger.info(f"({it}/{max_iter}) Averaged stats: {str(metric_logger)}")
             val_metric = np.mean(train_loss)
 
             if val_loader is not None:
@@ -296,74 +353,48 @@ class PerfPredictor(Predictor):
                     f"BEST: {round(best_val_metric, 4)} ({best_iter})"
                 )
                 if patience_counter >= patience:
-                    logger.warning(
-                        "Early stopping triggered! "
-                        f"No improvement in the last {patience} iterations. "
+                    logger.log(
+                        15,
                         "Stopping training..."
+                        f"No improvement in the last {patience} iterations. "
                     )
                     break
 
         if early_stop:
+            logger.info(
+                f"Loading best model from iteration {best_iter} with val score {best_val_metric}"
+            )
             self.model.load_state_dict(torch.load(temp_save_file_path))
+        
+        if os.path.exists(cache_dir):
+            shutil.rmtree(cache_dir)
 
         # after training the gp, set its training data
-        # to match the given parameter "_max_train_data_size"
+        # TODO: check if this can be improved
         self.model.eval()
-        size = min(self._max_train_data_size, len(dataset))
+        size = min(self.train_data_size, len(dataset))
         loader = DataLoader(dataset, batch_size=size, shuffle=True)
         a, b, c = next(iter(loader))
         a, b, c = a.to(dev), b.to(dev), c.to(dev)
         self.model.set_train_data(a, b, c)
 
-        # TODO: is there a better way to do this?
-        # probabaly not needed when training-data-size is big
-        # test-score on a holdout set
-        # bs: 128 - score: 0.0504
-        # bs: 256 - score: 0.031
-        # bs: 512 - score: 0.0251
-        # bs: 1024 - score: 0.0243
-        # bs: 2048 - score: 0.0237
-        # bs: 4096 - score: 0.0233  -->  seems to be the sweet spot
-        # bs: 8192 - score: 0.0274
-        # bs: 16384 - score: 0.0232
-        # using std/var to find the a better batch
-        # loader = DataLoader(
-        #     dataset,
-        #     batch_size=size,
-        #     shuffle=True,
-        #     num_workers=psutil.cpu_count(False),
-        # )
-        # best_metric = 0
-        # best_batch = None
-        # for batch in loader:
-        #     batch = (b.to(dev) for b in _batch)
-        #     X, curve, y = batch
-        #     encoding = self.model.encoder(X, curve)
-        #     metric = torch.std(encoding, dim=0).mean()
-        #     if metric > best_metric:
-        #         best_metric = metric
-        #         best_batch = X, curve, y
-        # self.model.set_train_data(*best_batch)
-
     def _fit(
         self,
-        pipeline: pd.DataFrame,
-        curve: np.ndarray,
+        X: pd.DataFrame,
+        y: np.ndarray,
+        **kwargs,
     ):
         if self.is_fit:
             raise AssertionError("Predictor is already fit! Create a new one.")
 
-        self._validate_fit_data(pipeline, curve)
-        # x, curve, y = self._transform_data(pipeline, curve)
-        # x = self._preprocess_fit_data(x)
-        # train_dataset = TabularTorchDataset(x, curve, y)
-        x = self._preprocess_fit_data(pipeline)
-        train_dataset = CurveRegressionDataset(x, curve)
+        self._validate_fit_data(X, y)
+        x = self._preprocess_fit_data(X)
+        train_dataset = CurveRegressionDataset(x, y)
 
         self.model = self._get_model()
         self._train_model(train_dataset, **self.fit_params)
 
-        self._fitted_model = copy.deepcopy(self.model)
+        self._model_fit = copy.deepcopy(self.model)
         self._fit_data = train_dataset
 
         return self
@@ -388,38 +419,36 @@ class PerfPredictor(Predictor):
 
     def _refit_model(
         self,
-        tune_set,
+        dataset,
         learning_rate_init,
-        min_batch_size,
-        max_batch_size,
+        batch_size,
         max_iter,
         early_stop,
         patience,
-        validation_fraction,
         tol,
     ):
+        learning_rate_init = 0.001
         logger.info("Refitting model...")
         if self.seed is not None:
             random.seed(self.seed)
             np.random.seed(self.seed)
             torch.manual_seed(self.seed)
-        cache_dir = os.path.expanduser("~/.cache")
-        cache_dir = os.path.join(cache_dir, "qtt", self.name)
+        cache_dir = os.path.join(self.path, ".tmp")
         os.makedirs(cache_dir, exist_ok=True)
         temp_save_file_path = os.path.join(cache_dir, self.temp_file_name)
 
-        num_workers = psutil.cpu_count(False)
+        num_workers = 4
         self.device = get_torch_device()
         dev = self.device
-        self.model.to(dev)
 
+        self.model.to(dev)
         self.model.eval()
         torch.save(self.model.state_dict(), temp_save_file_path)
 
         # initial validation loss
         loader = DataLoader(
-            tune_set,
-            batch_size=min(len(tune_set), max_batch_size),
+            dataset,
+            batch_size=min(len(dataset), batch_size),
             num_workers=num_workers,
         )
         val_metric = []
@@ -436,12 +465,12 @@ class PerfPredictor(Predictor):
 
         assert self._fit_data is not None
         fitting_set = self._fit_data
-        logger.debug(f"Number of samples in the tuning set: {len(tune_set)}")
-        if len(tune_set) < min_batch_size:
+        logger.debug(f"Number of samples in the tuning set: {len(dataset)}")
+        if len(dataset) < batch_size:
             logger.warning(
-                f"Tuning-set size is small ({len(tune_set)})."
+                f"Tuning-set size is small ({len(dataset)})."
                 "Using all samples for training + validation. "
-                f"Adding samples from training set to reach minimal sample size {min_batch_size}"
+                f"Adding samples from training set to reach minimal sample size {batch_size}"
             )
 
         if patience is not None:
@@ -452,27 +481,24 @@ class PerfPredictor(Predictor):
             else:
                 logger.info(f"Early stopping on training loss with patience {patience}")
 
-        # make batch size a power of 2 and at least two train steps
-        train_bs = min(int(2 ** np.floor(np.log2(len(tune_set)) - 1)), max_batch_size)
-        # make sure the batch size is not too small >= 512
-        target_bs = max(min_batch_size, train_bs)
+        loader_bs = min(int(2 ** np.floor(np.log2(len(dataset) - 1))), batch_size)
         train_loader = DataLoader(
-            tune_set,
-            batch_size=train_bs,
+            dataset,
+            batch_size=loader_bs,
             shuffle=True,
             drop_last=True,
             num_workers=num_workers,
         )
         val_loader = DataLoader(
-            tune_set,
-            batch_size=min(max_batch_size, len(tune_set)),
+            dataset,
+            batch_size=min(batch_size, len(dataset)),
             num_workers=num_workers,
         )
         extra_loader = None
-        if train_bs < target_bs:
+        if loader_bs < self.train_data_size:
             extra_loader = DataLoader(
                 fitting_set,
-                batch_size=target_bs - train_bs,
+                batch_size=batch_size - loader_bs,
                 shuffle=True,
                 num_workers=num_workers,
             )
@@ -487,8 +513,8 @@ class PerfPredictor(Predictor):
             for batch in metric_logger.log_every(train_loader, 1, header, logger):
                 # forward
                 if extra_loader is not None:
-                    batch_one = next(iter(extra_loader))
-                    batch = [torch.cat([b1, b2]) for b1, b2 in zip(batch, batch_one)]
+                    b1 = next(iter(extra_loader))
+                    batch = [torch.cat([b1, b2]) for b1, b2 in zip(batch, b1)]
                 batch = (b.to(dev) for b in batch)
                 X, curve, y = batch
                 loss = self.model.train_step(X, curve, y)
@@ -503,26 +529,29 @@ class PerfPredictor(Predictor):
                 metric_logger.update(loss=loss.item())
                 metric_logger.update(lengthscale=self.model.lengthscale)
                 metric_logger.update(noise=self.model.noise)  # type: ignore
-            logger.info(f"Averaged stats: {str(metric_logger)}")
+            logger.info(f"[{it}/{max_iter}]Averaged stats: {str(metric_logger)}")
             val_metric = np.mean(train_loss)
 
             if val_loader is not None:
                 self.model.eval()
 
-                if target_bs < self._max_train_data_size:
-                    _loader = DataLoader(
+                l1 = DataLoader(
+                    dataset,
+                    batch_size=len(dataset),
+                    shuffle=True,
+                )
+                batch = next(iter(l1))
+                if len(dataset) < self.train_data_size:
+                    l2 = DataLoader(
                         fitting_set,
-                        batch_size=self._max_train_data_size - train_bs,
+                        batch_size=self.train_data_size - loader_bs,
                         shuffle=True,
                     )
-                    batch_one = next(iter(_loader))
-                    batch_two = next(iter(train_loader))
-                    batch = [
-                        torch.cat([b1, b2]) for b1, b2 in zip(batch_one, batch_two)
-                    ]
-                    batch = (b.to(dev) for b in batch)
-                    a, b, c = batch
-                    self.model.set_train_data(a, b, c)
+                    b2 = next(iter(l2))
+                    batch = [torch.cat([p, q]) for p, q in zip(batch, b2)]
+                batch = (b.to(dev) for b in batch)
+                a, b, c = batch
+                self.model.set_train_data(a, b, c)
 
                 val_loss = []
                 with torch.no_grad():
@@ -542,18 +571,16 @@ class PerfPredictor(Predictor):
                     torch.save(self.model.state_dict(), temp_save_file_path)
                 else:
                     patience_counter += 1
-                logger.log(
-                    15,
+                logger.info(
+                    f"[{it}/{max_iter}]  "
                     f"VAL: {round(val_metric, 4)}  "
-                    f"ITER: {it}/{max_iter}  "
                     f"BEST: {round(best_val_metric, 4)} ({best_iter})",
                 )
                 if patience_counter >= patience:
                     logger.log(
                         15,
-                        "Early stopping triggered! "
-                        f"No improvement in the last {patience} iterations. "
-                        "Stopping training...",
+                        "Stopping training..."
+                        f"No improvement in the last {patience} iterations. ",
                     )
                     break
 
@@ -561,26 +588,27 @@ class PerfPredictor(Predictor):
             logger.info(f"Loading best model from iteration {best_iter}")
             self.model.load_state_dict(torch.load(temp_save_file_path))
 
+        # remove cache dir
+        if os.path.exists(cache_dir):
+            shutil.rmtree(cache_dir)
+
         # after training the model, reset GPs training data
         self.model.eval()
-        # if len(tune_set) < self._max_train_data_size:
-        #     t_loader = DataLoader(tune_set, batch_size=len(tune_set), shuffle=True)
-        #     f_loader = DataLoader(
-        #         fitting_set,
-        #         batch_size=self._max_train_data_size - len(tune_set),
-        #         shuffle=True,
-        #     )
-        #     batch_one = next(iter(t_loader))
-        #     batch_two = next(iter(f_loader))
-        #     batch = [torch.cat([b1, b2]) for b1, b2 in zip(batch_one, batch_two)]
-        #     batch = (b.to(dev) for b in batch)
-        #     a, b, c = batch
-        # else:
-        loader = DataLoader(
-            tune_set, batch_size=self._max_train_data_size, shuffle=True
-        )
-        batch = next(iter(loader))
-        batch = (b.to(dev) for b in batch)
+        if len(dataset) < self.train_data_size:
+            l1 = DataLoader(dataset, batch_size=len(dataset), shuffle=True)
+            l2 = DataLoader(
+                fitting_set,
+                batch_size=self.train_data_size - len(dataset),
+                shuffle=True,
+            )
+            b1 = next(iter(l1))
+            b2 = next(iter(l2))
+            batch = [torch.cat([a, b]) for a, b in zip(b1, b2)]
+            batch = (b.to(dev) for b in batch)
+        else:
+            loader = DataLoader(dataset, batch_size=self.train_data_size, shuffle=True)
+            batch = next(iter(loader))
+            batch = (b.to(dev) for b in batch)
         a, b, c = batch
         self.model.set_train_data(a, b, c)
 
@@ -618,30 +646,27 @@ class PerfPredictor(Predictor):
         return path
 
     @classmethod
-    def load(cls, path: str, reset_paths=True, verbose=True):
+    def load(cls, path: str, reset_paths=True, verbose=True) -> "PerfPredictor":
         """
         Loads the model from disk to memory.
-        The loaded model will be on the same device it was trained on (cuda/mps);
-        if the device is it's not available (trained on GPU, deployed on CPU),
-        then `cpu` will be used.
 
-        Parameters
-        ----------
-        path : str
-            Path to the saved model, minus the file name.
-            This should generally be a directory path ending with a '/' character (or appropriate path separator value depending on OS).
-            The model file is typically located in os.path.join(path, cls.model_file_name).
-        reset_paths : bool, default True
-            Whether to reset the self.path value of the loaded model to be equal to path.
-            It is highly recommended to keep this value as True unless accessing the original self.path value is important.
-            If False, the actual valid path and self.path may differ, leading to strange behaviour and potential exceptions if the model needs to load any other files at a later time.
-        verbose : bool, default True
-            Whether to log the location of the loaded file.
+        The loaded model will be on the same device it was trained on (e.g., cuda/mps).
+        If the device is unavailable (e.g., trained on GPU but deployed on CPU),
+        the model will be loaded on `cpu`.
 
-        Returns
-        -------
-        model : cls
-            Loaded model object.
+        Args:
+            path (str): Path to the saved model, excluding the file name.
+                This should typically be a directory path ending with a '/' character
+                (or appropriate path separator based on OS). The model file is usually
+                located at `os.path.join(path, cls.model_file_name)`.
+            reset_paths (bool, optional): Whether to reset the `self.path` value of the loaded
+                model to be equal to `path`. Defaults to True. Setting this to False may cause
+                inconsistencies between the actual valid path and `self.path`, potentially leading
+                to strange behavior and exceptions if the model needs to load other files later.
+            verbose (bool, optional): Whether to log the location of the loaded file. Defaults to True.
+
+        Returns:
+            cls: The loaded model object.
         """
         model: PerfPredictor = super().load(
             path=path, reset_paths=reset_paths, verbose=verbose

@@ -1,32 +1,38 @@
 # QuickTuneTool: A Framework for Efficient Model Selection and Hyperparameter Optimization
 
-QuickTune is a tool designed to address the challenge of selecting the optimal pretrained model and its finetuning hyperparameters for new datasets. QuickTune aims to streamline this process by using a Combined Algorithm Selection and Hyperparameter Optimization (CASH) technique within a Bayesian optimization framework.
+QuickTuneTool tackles the challenge of selecting the best pretrained model and fine-tuning hyperparameters for new datasets. It simplifies this process using a Combined Algorithm Selection and Hyperparameter Optimization (CASH) technique within a Bayesian optimization framework.
 
-The approach is based on three key components:
-1. **Gray-Box Hyperparameter Optimization (HPO)**: We explore learning curves partially by training models for a few epochs initially and investing more time into the most promising candidates.
-2. **Meta-Learning**: We utilize information from previous evaluations on related tasks to guide the search process more effectively.
-3. **Cost-Awareness**: We balance the trade-off between time and performance during the search for optimal models and hyperparameters.
 
-Find more information in the paper `Quick-Tune: Quickly Learning Which Pre Trained Model to Fine Tune and How` [ICLR2024](https://openreview.net/forum?id=tqh1zdXIra)
+### Table of Contents
+- [Key Features](#key-features)
+- [Getting Started](#getting-started)
+  - [Installation](#installation)
+    - [Install from Source](#install-from-source)
+- [Basic Usage](#basic-usage)
+- [Advanced Usage](#advanced-usage)
+- [References](#references)
+- [Citations](#citations)
+
+The approach relies on three key components:
+1. **Gray-Box HPO**: Instead of fully training all models, QuickTuneTool leverages partial learning curves by running models for only a few initial epochs and then focusing on the most promising ones.
+2. **Meta-Learning**: The tool draws insights from prior evaluations on related tasks to accelerate and improve the search for optimal models and hyperparameters.
+3. **Cost-Awareness**: QuickTuneTool balances the trade-off between time and performance, ensuring an efficient search for the best configurations.
+
+For more details, check out the paper `Quick-Tune: Quickly Learning Which Pre Trained Model to Fine Tune and How` [ICLR2024](https://openreview.net/forum?id=tqh1zdXIra)
 
 **At the moment only *Image Classification* is implemented.**
 
 ## Getting Started
 
 ### Installation
-Create environment:
-```bash
-conda create -n qtt python=3.10
-conda activate qtt
-```
 
 ### Install from source
 ```bash
 git clone https://github.com/automl/QTT
-pip install -e QTT
+pip install -e QTT  # -e for editable mode
 ```
 
-## Basic Usage
+## Simple Usage
 We provide a simple to use script.
 
 ```python
@@ -39,14 +45,8 @@ For more code examples take a look into the notebooks [folder](notebooks).
 
 
 ## Advanced Usage
-### Download the QuickTune Meta-Album-Dataset:
-```bash
-wget https://nextcloud.tf.uni-freiburg.de/index.php/s/fQmPmB84EmwxddJ/download/mtlbm.zip
-unzip mtlbm.zip
-```
-The Meta-Dataset consists of learning curves generated with different vision datasets of the [Meta Album](https://meta-album.github.io/). They are divided into three different groups: `micro`, ``mini`` and ``extended``.
 
-If you want to train your own predictors, take a look at the examples folder and modify the [script](examples/metatrain.py) to your needs.
+Please check out our documentation for more:
 
 ## References
 
